@@ -16,6 +16,7 @@
     #include <netinet/in.h>
     #include <arpa/inet.h>
     #include <unistd.h>
+    #include <netinet/tcp.h> // For TCP_NODELAY
     #define SOCKET int
     #define INVALID_SOCKET -1
     #define SOCKET_ERROR -1
@@ -35,33 +36,33 @@ struct ProcessResponse {
 };
 
 // Simple HTTP parser and handler
-class SimpleHttpServer {
+class HttpInferenceServer {
 private:
     SOCKET serverSocket;
     int port;
 
 public:
-    SimpleHttpServer(int serverPort = 8080) : port(serverPort), serverSocket(INVALID_SOCKET) {}
+    HttpInferenceServer(int serverPort = 8080) : port(serverPort), serverSocket(INVALID_SOCKET) {}
     
-    ~SimpleHttpServer() {
+    ~HttpInferenceServer() {
         if (serverSocket != INVALID_SOCKET) {
-            closesocket(serverSocket);
+            closesocket(serverSocket);      // Close socket
         }
 #ifdef _WIN32
-        WSACleanup();
+        WSACleanup();                       // Clean up Winsock2
 #endif
     }
 
     bool initializeSocket() {
 #ifdef _WIN32
         WSADATA wsaData;
-        if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+        if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {                                        // Initialize Winsock2
             std::cerr << "WSAStartup failed" << std::endl;
             return false;
         }
 #endif
 
-        serverSocket = socket(AF_INET, SOCK_STREAM, 0);
+        serverSocket = socket(AF_INET, SOCK_STREAM, 0); // AF_INET is the Internet address family for IPv4, SOCK_STREAM specify the type as TCP, 0 is the protocol (let the os choose default for tcp)
         if (serverSocket == INVALID_SOCKET) {
             std::cerr << "Socket creation failed" << std::endl;
             return false;
@@ -69,19 +70,19 @@ public:
 
         // Allow socket reuse
         int opt = 1;
-        setsockopt(serverSocket, SOL_SOCKET, SO_REUSEADDR, (char*)&opt, sizeof(opt));
+        setsockopt(serverSocket, SOL_SOCKET, SO_REUSEADDR, (char*)&opt, sizeof(opt));           // Allow socket reuse (in case short restart of the server, os sometime set port in use flog for s short time after the server is killed)
 
-        sockaddr_in serverAddr;
+        sockaddr_in serverAddr;     // Struct to hold the server address
         serverAddr.sin_family = AF_INET;
-        serverAddr.sin_addr.s_addr = INADDR_ANY;
-        serverAddr.sin_port = htons(port);
+        serverAddr.sin_addr.s_addr = INADDR_ANY;   // INADDR_ANY is the wildcard address for all IPv4 addresses
+        serverAddr.sin_port = htons(port);         // Convert port to network byte order (big endian)
 
-        if (bind(serverSocket, (sockaddr*)&serverAddr, sizeof(serverAddr)) == SOCKET_ERROR) {
+        if (bind(serverSocket, (sockaddr*)&serverAddr, sizeof(serverAddr)) == SOCKET_ERROR) {    // Bind socket to port
             std::cerr << "Bind failed on port " << port << std::endl;
             return false;
         }
 
-        if (listen(serverSocket, 10) == SOCKET_ERROR) {
+        if (listen(serverSocket, 10) == SOCKET_ERROR) {                                         // Listen for connections with a queue of 10
             std::cerr << "Listen failed" << std::endl;
             return false;
         }
@@ -174,6 +175,10 @@ public:
 
     // Handle client connection
     void handleClient(SOCKET clientSocket) {
+        // Set TCP_NODELAY to disable Nagle's algorithm for lower latency
+        int opt = 1;
+        setsockopt(clientSocket, IPPROTO_TCP, TCP_NODELAY, (char*)&opt, sizeof(opt));
+
         char buffer[4096];
         int bytesReceived = recv(clientSocket, buffer, sizeof(buffer) - 1, 0);
         
@@ -182,7 +187,7 @@ public:
             return;
         }
         
-        buffer[bytesReceived] = '\0';
+        buffer[bytesReceived] = '\0';   // set the end to null
         std::string requestData(buffer);
         
         HttpRequest request;
@@ -213,6 +218,7 @@ public:
 
     void run() {
         if (!initializeSocket()) {
+            std::cerr << "Failed to initialize socket" << std::endl;
             return;
         }
 
@@ -225,37 +231,32 @@ public:
             sockaddr_in clientAddr;
             socklen_t clientAddrLen = sizeof(clientAddr);
             
-            SOCKET clientSocket = accept(serverSocket, (sockaddr*)&clientAddr, &clientAddrLen);
+            SOCKET clientSocket = accept(serverSocket, (sockaddr*)&clientAddr, &clientAddrLen);   // loop blocker. will wait for connection
             if (clientSocket == INVALID_SOCKET) {
                 std::cerr << "Accept failed" << std::endl;
                 continue;
             }
 
             // Handle client in a separate thread for basic concurrency
-            std::thread clientThread(&SimpleHttpServer::handleClient, this, clientSocket);
-            clientThread.detach();
+            std::thread clientThread(&HttpInferenceServer::handleClient, this, clientSocket); // pass the function pointer, the class instance, and the arguments to the thread
+            clientThread.detach();  // fire and forget, for local server like this, max connection will not gonna be a problem using this solution
         }
     }
 };
 
-void run() {
-    // Keep minimal Oatpp usage - just for environment initialization
+
+int main() {
+    std::cout << "Starting Mock Inference Server..." << std::endl;
+    // Minimal Oatpp usage - just for environment initialization
     oatpp::base::Environment::init();
-    
+
     try {
-        // Create and run our simple HTTP server
-        SimpleHttpServer server(8080);
+        HttpInferenceServer server(8080);
         server.run();
         
     } catch (const std::exception& e) {
         std::cerr << "Server error: " << e.what() << std::endl;
     }
-    
     oatpp::base::Environment::destroy();
-}
-
-int main() {
-    std::cout << "Starting Mock Inference Server..." << std::endl;
-    run();
     return 0;
 }
