@@ -30,10 +30,11 @@ def test_process(message):
 def main():
     print("Testing C++ Server")
     
-    messages = ["Hello", "Test message", ""]
-    for msg in messages:
-        print(f"\nTesting: '{msg}'")
-        test_process(msg)
+    messages = ["Hello", "Test message", "sbdfsdbf","grgethtrwhjyr"]
+    # for msg in messages:
+    for i in range(100000):
+        print(f"\nTesting: '{i}'")
+        test_process(messages[i%len(messages)])
 
 if __name__ == "__main__":
     main()

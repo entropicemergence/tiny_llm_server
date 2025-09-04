@@ -8,23 +8,88 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 find_package(Threads REQUIRED)
 
 # Add oatpp from submodule
-add_subdirectory(external/oatpp)
+# add_subdirectory(external/oatpp)
 
 # Include directories
 include_directories(src)
+
+# Create IPC library (shared between server and worker)
+add_library(ipc_lib
+    src/ipc/ipc_utils.cpp
+)
+
+# Create tokenizer library
+add_library(inference_lib
+    src/neural_net/simple_tokenizer.cpp
+    src/neural_net/tensor.cpp
+    src/neural_net/transformer.cpp
+)
+
+# Create worker processing library
+add_library(worker_lib
+    src/worker/worker_process.cpp
+)
+
+# Create server dispatcher library
+add_library(server_lib
+    src/server/task_dispatcher.cpp
+    src/server/worker_manager.cpp
+)
 
 # Create server executable
 add_executable(server
     src/main_server.cpp
 )
 
+# Create worker executable
+add_executable(worker
+    src/worker/worker_main.cpp
+)
+
+add_executable(tok
+    src/neural_net/simple_tokenizer.cpp
+)
+target_link_libraries(tok
+    inference_lib
+)
+target_compile_definitions(tok PRIVATE TOKENIZER_DEBUG)
+
+add_executable(inference
+    src/neural_net/tiny_llm_inference.cpp
+)
+target_link_libraries(inference
+    inference_lib
+)
+target_compile_definitions(inference PRIVATE LLM_INFERENCE_DEBUG)
+
+
 # Link libraries for server
 target_link_libraries(server 
-    oatpp
+    server_lib
+    ipc_lib
+    # oatpp
     Threads::Threads
 )
 
+# Link libraries for worker
+target_link_libraries(worker
+    worker_lib
+    ipc_lib
+    Threads::Threads
+)
+
+# Add POSIX real-time library for semaphores (Linux/Unix)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(server rt)
+    target_link_libraries(worker rt)
+    target_link_libraries(tok rt)
+    target_link_libraries(inference rt)
+endif()
+
 # Set output directory
-set_target_properties(server PROPERTIES
+set_target_properties(server worker tok inference PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
 )
+
+
+

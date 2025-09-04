@@ -4,11 +4,11 @@
 
 echo "Building HTTP Server for Ubuntu/WSL..."
 
-# Remove build directory if it exists
-if [ -d "build" ]; then
-    echo "Removing existing build directory..."
-    rm -rf build
-fi
+# # Remove build directory if it exists
+# if [ -d "build_linux" ]; then
+#     echo "Removing existing build_linux directory..."
+#     rm -rf build_linux
+# fi
 
 # Check if required tools are installed
 check_dependency() {
@@ -48,13 +48,13 @@ fi
 
 # Configure and build using CMake preset
 echo "Configuring and building with CMake preset..."
-cmake --preset linux-release
+cmake --preset linux-release -B build_linux
 if [ $? -ne 0 ]; then
     echo "ERROR: Configuration failed"
     exit 1
 fi
 
-cmake --build --preset linux-release
+cmake --build build_linux
 if [ $? -ne 0 ]; then
     echo "ERROR: Build failed"
     exit 1
@@ -63,14 +63,17 @@ fi
 echo ""
 echo "Build completed successfully!"
 echo ""
-echo "Executables are available in: build/"
+echo "Executables are available in: build_linux/"
 echo "  - server  (HTTP Server on port 8080)"
 echo ""
 echo "To run the server:"
-echo "  ./build/server"
+echo "  ./build_linux/server"
 echo ""
 echo "To test the server:"
 echo "  curl -X POST http://localhost:8080/process -H \"Content-Type: application/json\" -d '{\"message\":\"Hello World\"}'"
 echo ""
 echo "Press any key to continue..."
-read -n 1 -s
+# read -n 1 -s
+
+
+build_linux/inference

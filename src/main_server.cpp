@@ -1,4 +1,5 @@
-#include "oatpp/core/base/Environment.hpp"  // Keep for initialization only
+// #include "oatpp/core/base/Environment.hpp"  // for initialization only
+
 #include <string>
 #include <memory>
 #include <iostream>
@@ -24,8 +25,13 @@
 #endif
 
 
+#include "server/task_dispatcher.hpp"
 
-// Simple C-style structs for request/response data
+
+
+// Add section to setup global environment, containing model, worker binary path, and other dynamic variables. must adapt to where the base path where the program is called from
+
+// structs for request/response data
 struct ProcessRequest {
     std::string message;
 };
@@ -35,19 +41,24 @@ struct ProcessResponse {
     int status_code;
 };
 
-// Simple HTTP parser and handler
+struct HttpRequest {
+    std::string method;
+    std::string path;
+    std::map<std::string, std::string> headers;
+    std::string body;
+};
+
 class HttpInferenceServer {
 private:
     SOCKET serverSocket;
     int port;
+    std::unique_ptr<TaskDispatcher> dispatcher;
 
 public:
-    HttpInferenceServer(int serverPort = 8080) : port(serverPort), serverSocket(INVALID_SOCKET) {}
-    
+    HttpInferenceServer(int serverPort) : port(serverPort), serverSocket(INVALID_SOCKET) {dispatcher = std::make_unique<TaskDispatcher>();}
     ~HttpInferenceServer() {
-        if (serverSocket != INVALID_SOCKET) {
-            closesocket(serverSocket);      // Close socket
-        }
+        if (dispatcher) {dispatcher->shutdown();}                           // Cleanup dispatcher first to shutdown workers gracefully
+        if (serverSocket != INVALID_SOCKET) {closesocket(serverSocket);}    // Close socket
 #ifdef _WIN32
         WSACleanup();                       // Clean up Winsock2
 #endif
@@ -108,13 +119,6 @@ public:
         return true;
     }
 
-    // Parse HTTP request manually
-    struct HttpRequest {
-        std::string method;
-        std::string path;
-        std::map<std::string, std::string> headers;
-        std::string body;
-    };
 
     bool parseHttpRequest(const std::string& requestData, HttpRequest& request) {
         std::istringstream stream(requestData);
@@ -165,12 +169,15 @@ public:
     // Process the message (main business logic)
     std::string processMessage(const std::string& message) {
         if (message.empty()) {
-            return "{\"result\": \"Error: No message provided\"}";
+            return "{\"error\": \"No message provided\"}";
         }
         
-        // TODO: Replace with worker process communication
-        // For now, simple processing
-        return "{\"result\": \"Processed: " + message + "\"}";
+        // Use task dispatcher to send to worker processes
+        if (!dispatcher || !dispatcher->is_ready()) {
+            return "{\"error\": \"Task dispatcher not ready\"}";
+        }
+        
+        return dispatcher->process_message(message);
     }
 
     // Handle client connection
@@ -217,8 +224,16 @@ public:
     }
 
     void run() {
+        // Initialize task dispatcher first
+        if (!dispatcher->initialize()) {
+            std::cerr << "Failed to initialize worker task dispatcher, quitting..." << std::endl;
+            return;
+        }else{
+            std::cout << "Task dispatcher initialized successfully, worker processes are ready to serve requests" << std::endl;
+        }
+        
         if (!initializeSocket()) {
-            std::cerr << "Failed to initialize socket" << std::endl;
+            std::cerr << "Failed to initialize socket, quitting..." << std::endl;
             return;
         }
 
@@ -233,7 +248,7 @@ public:
             
             SOCKET clientSocket = accept(serverSocket, (sockaddr*)&clientAddr, &clientAddrLen);   // loop blocker. will wait for connection
             if (clientSocket == INVALID_SOCKET) {
-                std::cerr << "Accept failed" << std::endl;
+                std::cerr << "Accept failed, Invalid socket, closing connection..." << std::endl;
                 continue;
             }
 
@@ -248,7 +263,7 @@ public:
 int main() {
     std::cout << "Starting Mock Inference Server..." << std::endl;
     // Minimal Oatpp usage - just for environment initialization
-    oatpp::base::Environment::init();
+    // oatpp::base::Environment::init();
 
     try {
         HttpInferenceServer server(8080);
@@ -257,6 +272,6 @@ int main() {
     } catch (const std::exception& e) {
         std::cerr << "Server error: " << e.what() << std::endl;
     }
-    oatpp::base::Environment::destroy();
+    // oatpp::base::Environment::destroy();
     return 0;
 }

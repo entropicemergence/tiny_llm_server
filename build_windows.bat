@@ -4,9 +4,9 @@ REM Simple build script using CMake presets
 echo Building HTTP Server...
 
 REM Remove build directory if it exists
-if exist build (
-    echo Removing existing build directory...
-    rmdir /s /q build
+if exist build_windows (
+    echo Removing existing build_windows directory...
+    rmdir /s /q build_windows
 )
 
 REM Check if we're in a Visual Studio Developer Command Prompt
@@ -20,14 +20,14 @@ if errorlevel 1 (
 
 REM Configure and build using CMake preset
 echo Configuring and building with CMake preset...
-cmake --preset windows-release
+cmake --preset windows-release -B build_windows
 if errorlevel 1 (
     echo ERROR: Configuration failed
     pause
     exit /b 1
 )
 
-cmake --build --preset windows-release
+cmake --build build_windows
 if errorlevel 1 (
     echo ERROR: Build failed
     pause
@@ -37,7 +37,7 @@ if errorlevel 1 (
 echo.
 echo Build completed successfully!
 echo.
-echo Executables are available in: build\
+echo Executables are available in: build_windows\
 echo   - server.exe  (HTTP Server on port 8080)
 echo.
 echo To test the server:
