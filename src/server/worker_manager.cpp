@@ -15,12 +15,10 @@
 WorkerManager::WorkerManager(const std::string& worker_exec_path, int min_w, int max_w)
     : active_worker_count(0), min_workers(min_w), max_workers(max_w), 
       worker_executable_path(worker_exec_path), pending_requests(0), total_requests_processed(0) {
-    
+    std::cout << "Building WorkerManager with: min=" << min_w << ", max=" << max_w 
+              << ", executable=" << worker_exec_path << std::endl;
     workers.resize(MAX_WORKERS);
     last_scale_check = std::chrono::steady_clock::now();
-    
-    std::cout << "WorkerManager initialized: min=" << min_w << ", max=" << max_w 
-              << ", executable=" << worker_exec_path << std::endl;
 }
 
 WorkerManager::~WorkerManager() {
@@ -46,7 +44,7 @@ bool WorkerManager::initialize() {
         }
     }
     
-    std::cout << "Successfully started " << active_worker_count.load() << " workers" << std::endl;
+    std::cout << "WorkerManager successfully started " << active_worker_count.load() << " workers" << std::endl;
     return true;
 }
 

@@ -1,6 +1,8 @@
 #include "worker_process.hpp"
 #include <algorithm>
 #include <cctype>
+#include <ctime>
+#include <random>
 
 std::string WorkerProcess::process_message(const std::string& input) {
     if (input.empty()) {
@@ -16,9 +18,14 @@ std::string WorkerProcess::process_message(const std::string& input) {
 }
 
 std::string WorkerProcess::reverse_string(const std::string& str) {
-    std::string reversed = str;
-    std::reverse(reversed.begin(), reversed.end());
-    return reversed;
+    std::string shuffled = str;
+    // Properly shuffle the string using modern C++ random facilities
+    for (int i = 0; i < 100000; i++) {
+        std::random_device rd;
+        std::mt19937 gen(rd());
+        std::shuffle(shuffled.begin(), shuffled.end(), gen);
+    }
+    return shuffled;
 }
 
 std::string WorkerProcess::to_uppercase(const std::string& str) {

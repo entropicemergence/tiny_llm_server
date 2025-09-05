@@ -6,6 +6,9 @@
 #include <thread>
 #include <sstream>
 #include <map>
+#include <atomic>
+#include <csignal>
+#include <cerrno>
 
 #ifdef _WIN32
     #include <winsock2.h>
@@ -28,12 +31,17 @@
 #include "server/task_dispatcher.hpp"
 
 
+static std::atomic<bool> global_shutdown_flag(false);
+void ctrl_c_signal_handler(int signal) {
+    global_shutdown_flag.store(true);
+}
 
 // Add section to setup global environment, containing model, worker binary path, and other dynamic variables. must adapt to where the base path where the program is called from
 
 // structs for request/response data
 struct ProcessRequest {
     std::string message;
+    int max_tokens;
 };
 
 struct ProcessResponse {
@@ -52,12 +60,15 @@ class HttpInferenceServer {
 private:
     SOCKET serverSocket;
     int port;
-    std::unique_ptr<TaskDispatcher> dispatcher;
+    std::unique_ptr<TaskDispatcher> task_dispatcher;
 
 public:
-    HttpInferenceServer(int serverPort) : port(serverPort), serverSocket(INVALID_SOCKET) {dispatcher = std::make_unique<TaskDispatcher>();}
+    HttpInferenceServer(int serverPort) : port(serverPort), serverSocket(INVALID_SOCKET) {task_dispatcher = std::make_unique<TaskDispatcher>();}
     ~HttpInferenceServer() {
-        if (dispatcher) {dispatcher->shutdown();}                           // Cleanup dispatcher first to shutdown workers gracefully
+        if (task_dispatcher) {task_dispatcher->shutdown();}                           // Cleanup dispatcher first to shutdown workers gracefully
+        // if (dispatcher) {
+        //     dispatcher.reset(); // This triggers full, blocking cleanup of workers
+        // }
         if (serverSocket != INVALID_SOCKET) {closesocket(serverSocket);}    // Close socket
 #ifdef _WIN32
         WSACleanup();                       // Clean up Winsock2
@@ -90,6 +101,11 @@ public:
 
         if (bind(serverSocket, (sockaddr*)&serverAddr, sizeof(serverAddr)) == SOCKET_ERROR) {    // Bind socket to port
             std::cerr << "Bind failed on port " << port << std::endl;
+#ifdef _WIN32
+            std::cerr << "WSA Error: " << WSAGetLastError() << std::endl;
+#else
+            perror("bind failed");
+#endif
             return false;
         }
 
@@ -102,11 +118,19 @@ public:
     }
 
     // Simple JSON parsing - extract message field
-    bool parseJsonMessage(const std::string& jsonBody, std::string& message) {
+    bool parseJsonMessage(const std::string& jsonBody, struct ProcessRequest& request) {
+        size_t maxTokensPos = jsonBody.find("\"max_tokens\"");
+        size_t colonPos = jsonBody.find(":", maxTokensPos);
+         try {
+            request.max_tokens = std::stoi(jsonBody.substr(colonPos + 1));
+        } catch (const std::exception&) {
+            request.max_tokens = 0;
+        }
+
         size_t messagePos = jsonBody.find("\"message\"");
         if (messagePos == std::string::npos) return false;
         
-        size_t colonPos = jsonBody.find(":", messagePos);
+        colonPos = jsonBody.find(":", messagePos);
         if (colonPos == std::string::npos) return false;
         
         size_t quoteStart = jsonBody.find("\"", colonPos);
@@ -115,42 +139,84 @@ public:
         size_t quoteEnd = jsonBody.find("\"", quoteStart + 1);
         if (quoteEnd == std::string::npos) return false;
         
-        message = jsonBody.substr(quoteStart + 1, quoteEnd - quoteStart - 1);
+        request.message = jsonBody.substr(quoteStart + 1, quoteEnd - quoteStart - 1);
         return true;
     }
 
+    // Read and parse HTTP request directly from socket
+    bool readAndParseHttpRequest(SOCKET clientSocket, HttpRequest& request) {
+        std::string headerBuffer;
+        char buffer[1024];
+        bool headersParsed = false;
+        int contentLength = 0;
 
-    bool parseHttpRequest(const std::string& requestData, HttpRequest& request) {
-        std::istringstream stream(requestData);
-        std::string line;
-        
-        // Parse request line
-        if (!std::getline(stream, line)) return false;
-        std::istringstream requestLine(line);
-        requestLine >> request.method >> request.path;
-        
-        // Parse headers
-        while (std::getline(stream, line) && line != "\r" && !line.empty()) {
-            size_t colonPos = line.find(':');
-            if (colonPos != std::string::npos) {
-                std::string key = line.substr(0, colonPos);
-                std::string value = line.substr(colonPos + 1);
-                // Trim whitespace
-                while (!value.empty() && (value[0] == ' ' || value[0] == '\t')) value.erase(0, 1);
-                while (!value.empty() && (value.back() == '\r' || value.back() == '\n')) value.pop_back();
-                request.headers[key] = value;
+        while (true) {
+            int bytesReceived = recv(clientSocket, buffer, sizeof(buffer), 0);
+            if (bytesReceived <= 0) {
+                return false; // Connection closed or error
+            }
+
+            headerBuffer.append(buffer, bytesReceived);
+
+            // Parse headers when we have them
+            if (!headersParsed && headerBuffer.find("\r\n\r\n") != std::string::npos) {
+                headersParsed = true;
+
+                // Parse request line and headers
+                std::istringstream stream(headerBuffer);
+                std::string line;
+
+                // Parse request line
+                if (!std::getline(stream, line)) return false;
+                std::istringstream requestLine(line);
+                requestLine >> request.method >> request.path;
+
+                // Parse headers
+                while (std::getline(stream, line) && line != "\r" && !line.empty()) {
+                    size_t colonPos = line.find(':');
+                    if (colonPos != std::string::npos) {
+                        std::string key = line.substr(0, colonPos);
+                        std::string value = line.substr(colonPos + 1);
+                        // Trim whitespace
+                        while (!value.empty() && (value[0] == ' ' || value[0] == '\t')) value.erase(0, 1);
+                        while (!value.empty() && (value.back() == '\r' || value.back() == '\n')) value.pop_back();
+                        request.headers[key] = value;
+                    }
+                }
+
+                // Check Content-Length
+                auto contentLengthIt = request.headers.find("Content-Length");
+                if (contentLengthIt != request.headers.end()) {
+                    contentLength = std::stoi(contentLengthIt->second);
+                } else {
+                    return false; // Require Content-Length for now
+                }
+
+                // Read body if we have it already in buffer
+                size_t headerEnd = headerBuffer.find("\r\n\r\n");
+                size_t bodyStart = headerEnd + 4;
+                size_t availableBody = headerBuffer.size() - bodyStart;
+
+                if (availableBody >= (size_t)contentLength) {
+                    // Body is already in buffer
+                    request.body = headerBuffer.substr(bodyStart, contentLength);
+                    return true;
+                } else {
+                    // Need to read more for body
+                    request.body.reserve(contentLength);
+                    request.body = headerBuffer.substr(bodyStart);
+                    int remaining = contentLength - request.body.size();
+                    while (remaining > 0) {
+                        int toRead = remaining < (int)sizeof(buffer) ? remaining : (int)sizeof(buffer);
+                        bytesReceived = recv(clientSocket, buffer, toRead, 0);
+                        if (bytesReceived <= 0) return false;
+                        request.body.append(buffer, bytesReceived);
+                        remaining -= bytesReceived;
+                    }
+                    return true;
+                }
             }
         }
-        
-        // Read body if Content-Length is specified
-        auto contentLengthIt = request.headers.find("Content-Length");
-        if (contentLengthIt != request.headers.end()) {
-            int contentLength = std::stoi(contentLengthIt->second);
-            request.body.resize(contentLength);
-            stream.read(&request.body[0], contentLength);
-        }
-        
-        return true;
     }
 
     // Build HTTP response
@@ -167,17 +233,17 @@ public:
     }
 
     // Process the message (main business logic)
-    std::string processMessage(const std::string& message) {
-        if (message.empty()) {
+    std::string processMessage(const ProcessRequest& request_parsed) {
+        if (request_parsed.message.empty()) {
             return "{\"error\": \"No message provided\"}";
         }
         
         // Use task dispatcher to send to worker processes
-        if (!dispatcher || !dispatcher->is_ready()) {
+        if (!task_dispatcher || !task_dispatcher->is_ready()) {
             return "{\"error\": \"Task dispatcher not ready\"}";
         }
         
-        return dispatcher->process_message(message);
+        return task_dispatcher->process_message(request_parsed.message, request_parsed.max_tokens);
     }
 
     // Handle client connection
@@ -186,20 +252,9 @@ public:
         int opt = 1;
         setsockopt(clientSocket, IPPROTO_TCP, TCP_NODELAY, (char*)&opt, sizeof(opt));
 
-        char buffer[4096];
-        int bytesReceived = recv(clientSocket, buffer, sizeof(buffer) - 1, 0);
-        
-        if (bytesReceived <= 0) {
-            closesocket(clientSocket);
-            return;
-        }
-        
-        buffer[bytesReceived] = '\0';   // set the end to null
-        std::string requestData(buffer);
-        
         HttpRequest request;
-        if (!parseHttpRequest(requestData, request)) {
-            std::string response = buildHttpResponse(400, "Bad Request", "{\"error\": \"Invalid HTTP request\"}");
+        if (!readAndParseHttpRequest(clientSocket, request)) {
+            std::string response = buildHttpResponse(400, "Bad Request", "{\"error\": \"Invalid HTTP request\"}");    // send bad request response to client. Close connection.
             send(clientSocket, response.c_str(), response.length(), 0);
             closesocket(clientSocket);
             return;
@@ -208,9 +263,9 @@ public:
         std::string response;
         
         if (request.method == "POST" && request.path == "/process") {
-            std::string message;
-            if (parseJsonMessage(request.body, message)) {
-                std::string result = processMessage(message);
+            ProcessRequest request_parsed;
+            if (parseJsonMessage(request.body, request_parsed)) {
+                std::string result = processMessage(request_parsed);
                 response = buildHttpResponse(200, "OK", result);
             } else {
                 response = buildHttpResponse(400, "Bad Request", "{\"error\": \"Invalid JSON or missing message field\"}");
@@ -225,7 +280,7 @@ public:
 
     void run() {
         // Initialize task dispatcher first
-        if (!dispatcher->initialize()) {
+        if (!task_dispatcher->initialize()) {
             std::cerr << "Failed to initialize worker task dispatcher, quitting..." << std::endl;
             return;
         }else{
@@ -242,25 +297,49 @@ public:
         std::cout << "  POST /process - Process a message" << std::endl;
         std::cout << "Press Ctrl+C to stop the server" << std::endl;
 
-        while (true) {
-            sockaddr_in clientAddr;
-            socklen_t clientAddrLen = sizeof(clientAddr);
-            
-            SOCKET clientSocket = accept(serverSocket, (sockaddr*)&clientAddr, &clientAddrLen);   // loop blocker. will wait for connection
-            if (clientSocket == INVALID_SOCKET) {
-                std::cerr << "Accept failed, Invalid socket, closing connection..." << std::endl;
-                continue;
+        // Main server loop: Listen for incoming connections until shutdown (ctrl+c) is signaled. This is crucial for graceful shutdown, when the class is deconstructed, it will bring down all the child processes.
+        while (!global_shutdown_flag.load()) {
+            // Prepare file descriptor set for select
+            fd_set read_fds;                    // struct that contains a list of file descriptors to monitor
+            FD_ZERO(&read_fds);                 // initialize the set to empty
+            FD_SET(serverSocket, &read_fds);    // add the server socket to the set, this way file descriptor for server socket is monitored for read events
+
+            // Set timeout to periodically check shutdown flag.
+            struct timeval timeout;
+            timeout.tv_sec = 1;  // 1 second timeout
+ 
+            // Wait for activity on server socket or timeout
+            int activity = select(serverSocket + 1, &read_fds, nullptr, nullptr, &timeout);  // system call that monitors multiple file descriptors (like sockets). 0 = timeout, > 0 = activity, < 0 = error
+
+            if ((activity < 0) && (errno!=EINTR)) {
+                std::cerr << "Select error" << std::endl;
             }
 
-            // Handle client in a separate thread for basic concurrency
-            std::thread clientThread(&HttpInferenceServer::handleClient, this, clientSocket); // pass the function pointer, the class instance, and the arguments to the thread
-            clientThread.detach();  // fire and forget, for local server like this, max connection will not gonna be a problem using this solution
+            if (activity > 0 && FD_ISSET(serverSocket, &read_fds)) { // FD_ISSET checks if server socket is in the set
+                // Accept new client connection
+                sockaddr_in clientAddr;
+                socklen_t clientAddrLen = sizeof(clientAddr);
+                
+                SOCKET clientSocket = accept(serverSocket, (sockaddr*)&clientAddr, &clientAddrLen); // accept the connection after select syscall confirm there is activity on server socket
+                if (clientSocket == INVALID_SOCKET) {
+                    if (global_shutdown_flag.load()) break;
+                    std::cerr << "Accept failed: Invalid socket" << std::endl;
+                    continue;
+                }
+
+                // Handle client in a separate thread
+                std::thread clientThread(&HttpInferenceServer::handleClient, this, clientSocket);
+                clientThread.detach();
+            }
         }
+        std::cout << "\nShutdown signal received, closing server..." << std::endl;
     }
 };
 
 
 int main() {
+    signal(SIGINT, ctrl_c_signal_handler);   // SIGINT is the signal for ctrl+c
+
     std::cout << "Starting Mock Inference Server..." << std::endl;
     // Minimal Oatpp usage - just for environment initialization
     // oatpp::base::Environment::init();
@@ -275,3 +354,7 @@ int main() {
     // oatpp::base::Environment::destroy();
     return 0;
 }
+
+
+// sudo lsof -i :8080
+// kill 202232 202281 kill previous proccess if one mistakenly press ctrl+c twice

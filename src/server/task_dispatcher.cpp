@@ -3,7 +3,7 @@
 #include <chrono>
 #include <thread>
 
-TaskDispatcher::TaskDispatcher() : initialized(false), should_stop_monitoring(false) {
+TaskDispatcher::TaskDispatcher() : task_dispatcher_initialized_state(false), should_stop_monitoring(false) {
     ipc_manager = std::make_unique<IPCManager>(true);  // true = server mode
     worker_manager = std::make_unique<WorkerManager>("./worker", 2, 4);  // min=2, max=4 workers
 }
@@ -13,10 +13,9 @@ TaskDispatcher::~TaskDispatcher() {
 }
 
 bool TaskDispatcher::initialize() {
-    if (initialized.load()) {
+    if (task_dispatcher_initialized_state.load()) {
         return true;  // Already initialized
     }
-    
     std::cout << "Initializing task dispatcher..." << std::endl;
     
     // Initialize IPC first
@@ -30,21 +29,11 @@ bool TaskDispatcher::initialize() {
         std::cerr << "Failed to initialize worker manager" << std::endl;
         return false;
     }
-    
+
     // Start background monitoring thread
-    should_stop_monitoring.store(false);
-    monitor_thread = std::make_unique<std::thread>([this]() {
-        while (!should_stop_monitoring.load()) {
-            std::this_thread::sleep_for(std::chrono::seconds(5));
-            
-            if (!should_stop_monitoring.load()) {
-                worker_manager->check_and_scale();
-                worker_manager->restart_unhealthy_workers();
-            }
-        }
-    });
+    start_monitor_thread();
     
-    initialized.store(true);
+    task_dispatcher_initialized_state.store(true);
     std::cout << "Task dispatcher initialized successfully" << std::endl;
     std::cout << "Started with " << worker_manager->get_active_worker_count() << " workers" << std::endl;
     
@@ -52,14 +41,11 @@ bool TaskDispatcher::initialize() {
 }
 
 void TaskDispatcher::cleanup() {
-    if (initialized.load()) {
+    if (task_dispatcher_initialized_state.load()) {
         std::cout << "Cleaning up task dispatcher..." << std::endl;
-        
+
         // Stop monitoring thread
-        should_stop_monitoring.store(true);
-        if (monitor_thread && monitor_thread->joinable()) {
-            monitor_thread->join();
-        }
+        stop_monitor_thread();
         
         // Request shutdown of all workers
         ipc_manager->request_shutdown();
@@ -67,13 +53,13 @@ void TaskDispatcher::cleanup() {
         // Cleanup worker manager (this will terminate all workers)
         worker_manager.reset();
         
-        initialized.store(false);
+        task_dispatcher_initialized_state.store(false);
         std::cout << "Task dispatcher cleanup complete" << std::endl;
     }
 }
 
-std::string TaskDispatcher::process_message(const std::string& message) {
-    if (!initialized.load()) {
+std::string TaskDispatcher::process_message(const std::string& message, int max_tokens) {
+    if (!task_dispatcher_initialized_state.load()) {
         return "{\"error\": \"Task dispatcher not initialized\"}";
     }
     
@@ -81,31 +67,26 @@ std::string TaskDispatcher::process_message(const std::string& message) {
         return "{\"error\": \"Empty message\"}";
     }
     
-    // Check for shutdown
     if (ipc_manager->is_shutdown_requested()) {
         return "{\"error\": \"Server is shutting down\"}";
     }
     
-    // Get next available worker
+    // Get next available worker in a round-robin fashion
     int assigned_worker = worker_manager->get_next_worker();
     if (assigned_worker == -1) {
         return "{\"error\": \"No workers available\"}";
     }
-    
-    // Notify worker manager about request start
-    worker_manager->on_request_start(assigned_worker);
-    
+
     uint64_t task_id;
-    int temp_worker;  // This will be overridden by our assigned_worker logic
     
-    // Enqueue the request
-    if (!ipc_manager->enqueue_request(message, task_id, temp_worker)) {
-        worker_manager->on_request_complete(assigned_worker);  // Clean up on failure
+    // Notify worker manager that we are starting a request for this worker
+    worker_manager->on_request_start(assigned_worker);
+
+    // Enqueue the request specifically for the assigned worker
+    if (!ipc_manager->enqueue_request(assigned_worker, message, task_id)) {
+        worker_manager->on_request_complete(assigned_worker); // Clean up on failure
         return "{\"error\": \"Failed to enqueue request - server may be overloaded\"}";
     }
-    
-    // Override the worker assignment to use our round-robin selection
-    assigned_worker = static_cast<int>((task_id - 1) % worker_manager->get_active_worker_count());
     
     std::cout << "Dispatched task " << task_id << " to worker " << assigned_worker 
               << " (message: \"" << message << "\")" << std::endl;
@@ -136,7 +117,7 @@ std::string TaskDispatcher::process_message(const std::string& message) {
     return "{\"result\": \"" + escaped_result + "\"}";
 }
 void TaskDispatcher::shutdown() {
-    if (initialized.load()) {
+    if (task_dispatcher_initialized_state.load()) {
         std::cout << "Requesting shutdown of all workers..." << std::endl;
         ipc_manager->request_shutdown();
         
@@ -148,6 +129,32 @@ void TaskDispatcher::shutdown() {
 void TaskDispatcher::print_worker_stats() const {
     if (worker_manager) {
         worker_manager->print_stats();
+    }
+}
+
+// Monitoring thread methods
+void TaskDispatcher::monitor_thread_loop() {
+    while (!should_stop_monitoring.load()) {
+        std::this_thread::sleep_for(std::chrono::seconds(5));
+
+        if (!should_stop_monitoring.load()) {
+            worker_manager->check_and_scale();
+            worker_manager->restart_unhealthy_workers();
+        }
+    }
+}
+
+void TaskDispatcher::start_monitor_thread() {
+    should_stop_monitoring.store(false);
+    monitor_thread = std::make_unique<std::thread>([this]() {
+        monitor_thread_loop();
+    });
+}
+
+void TaskDispatcher::stop_monitor_thread() {
+    should_stop_monitoring.store(true);
+    if (monitor_thread && monitor_thread->joinable()) {
+        monitor_thread->join();
     }
 }
 

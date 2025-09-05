@@ -23,12 +23,12 @@ private:
     int shm_fd;
     
     // Semaphores
-    sem_t* sem_req_items;   // Signals available requests
-    sem_t* sem_req_space;   // Signals space in ring
-    sem_t* sem_resp[MAX_WORKERS];  // Response semaphores (one per worker)
+    sem_t* sem_req_items[MAX_WORKERS]; // One per worker queue
+    sem_t* sem_req_space[MAX_WORKERS]; // One per worker queue
+    sem_t* sem_resp[MAX_WORKERS];      // One per worker
     
-    bool is_server;         // True if this is the server process
-    int worker_index;       // Worker index (-1 for server)
+    bool is_server;
+    int worker_index; // Only used by worker
 
 public:
     IPCManager(bool server = true, int worker_idx = -1);
@@ -41,11 +41,17 @@ public:
     void cleanup();
     
     // Server operations
-    bool enqueue_request(const std::string& message, uint64_t& task_id, int& assigned_worker);
+    // Enqueue a request for a specific worker
+    bool enqueue_request(int worker_idx, const std::string& message, uint64_t& task_id);
+    
+    // Wait for a response from a specific worker
     bool wait_for_response(int worker_idx, uint64_t task_id, std::string& result);
     
     // Worker operations
-    bool dequeue_request(ReqSlot& slot);
+    // Dequeue a request for this worker
+    bool dequeue_request(int worker_idx, ReqSlot& slot);
+    
+    // Send a response from this worker
     bool send_response(int worker_idx, uint64_t task_id, const std::string& result);
     
     // Utility functions

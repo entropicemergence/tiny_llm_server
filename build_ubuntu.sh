@@ -76,4 +76,4 @@ echo "Press any key to continue..."
 # read -n 1 -s
 
 
-build_linux/inference
+# build_linux/inference

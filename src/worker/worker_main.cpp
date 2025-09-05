@@ -66,15 +66,13 @@ int main(int argc, char* argv[]) {
     int processed_count = 0;
     
     while (keep_running && !ipc_manager.is_shutdown_requested()) {
-        // Try to dequeue a request
-        if (!ipc_manager.dequeue_request(request)) {
+        // Try to dequeue a request from this worker's queue
+        if (!ipc_manager.dequeue_request(worker_index, request)) {
             if (ipc_manager.is_shutdown_requested()) {
-                std::cout << "Shutdown requested, exiting..." << std::endl;
+                std::cout << "Shutdown requested, worker " << worker_index << " exiting..." << std::endl;
                 break;
             }
-            // Error occurred, but continue trying
-            std::cerr << "Failed to dequeue request, retrying..." << std::endl;
-            usleep(100000);  // Sleep 100ms before retrying
+            // An error or signal interruption occurred, loop and retry
             continue;
         }
         
