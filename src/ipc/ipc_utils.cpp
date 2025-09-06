@@ -9,8 +9,10 @@
 
 #ifdef DEBUG_PRINT
 #define DEBUG_COUT(x) std::cout << x << std::endl
+#define DEBUG_CERR(x) std::cerr << x << std::endl
 #else
 #define DEBUG_COUT(x)
+#define DEBUG_CERR(x)
 #endif
 
 
@@ -151,94 +153,40 @@ bool IPCManager::initialize() {
     return true;
 }
 
+/* ---------------------------------------------------------------Main Methood section-----------------------------------------------------------*/
 
+// Putting task into worker's request queue. max total task in the queue is RING_CAP_PER_WORKER * MAX_WORKERS
 bool IPCManager::enqueue_request(int worker_idx, const std::string& message, uint64_t& task_id) {
-    if (!shared_mem_ptr || worker_idx < 0 || worker_idx >= MAX_WORKERS) return false;
-    
-    if (message.length() >= CHUNK_SIZE) {
-        std::cerr << "Message too large: " << message.length() << " >= " << CHUNK_SIZE << std::endl;
+    if (message.length() >= CHUNK_SIZE) {   // Keep this check as sometimes client send long prompt, next is implement multi chunk enqueue.
+        DEBUG_CERR("Message too large: " << message.length() << " >= " << CHUNK_SIZE);
         return false;
     }
+    // sem_req_space is RING_CAP_PER_WORKER,
+    if (sem_wait(sem_req_space[worker_idx]) == -1) {DEBUG_CERR("Failed to wait for space on worker " << worker_idx << ": " << strerror(errno));return false;}
     
-    if (sem_wait(sem_req_space[worker_idx]) == -1) {
-        std::cerr << "Failed to wait for space on worker " << worker_idx << ": " << strerror(errno) << std::endl;
-        return false;
-    }
-    
-    task_id = get_next_task_id();
+    task_id = get_next_task_id();       // get unique task id.
     
     RequestQueue& queue = shared_mem_ptr->worker_queues[worker_idx];
     size_t head_val = queue.head.load();
-    ReqSlot& slot = queue.req[head_val % RING_CAP_PER_WORKER];
+    ReqSlot& slot = queue.req[head_val % RING_CAP_PER_WORKER];  // Get refference for the nect ReqSlot in the ring buffer.
     
     slot.task_id = task_id;
     slot.len = static_cast<uint32_t>(message.length());
     std::memcpy(slot.data, message.c_str(), message.length());
     slot.data[message.length()] = '\0';
     
-    queue.head.store(head_val + 1);
+    queue.head.store(head_val + 1);  // Increment the ring buffer head tracker
     
     sem_post(sem_request_items[worker_idx]);
     
     return true;
 }
 
-bool IPCManager::wait_for_response_chunk(int worker_idx, uint64_t task_id, std::string& chunk, bool& is_last) {
-    if (!shared_mem_ptr || worker_idx < 0 || worker_idx >= MAX_WORKERS) return false;
-    
-    while (true) {
-        if (sem_wait(sem_resp[worker_idx]) == -1) {
-            std::cerr << "Failed to wait for response from worker " << worker_idx << ": " << strerror(errno) << std::endl;
-            return false;
-        }
-        
-        RespSlot& slot = shared_mem_ptr->resp_slots[worker_idx];
-        
-        uint64_t received_task_id = slot.task_id.load();
-        
-        if (received_task_id == task_id) {
-            chunk.assign(slot.data, slot.len);
-            is_last = slot.is_last_piece;
-            sem_post(sem_resp_consumed[worker_idx]); // Signal worker: chunk consumed, you can now write the next one
-            return true;
-        } else {
-            // This is not the chunk we are looking for.
-            // Post back to the response semaphore to wake up another waiting thread.
-            sem_post(sem_resp[worker_idx]);
-            // Yield to give other threads a chance to run and check the chunk.
-            std::this_thread::sleep_for(std::chrono::milliseconds(25));
-        }
-    }
-}
-
-bool IPCManager::get_request_queue_size(int worker_idx, int& size) const {
-    if (worker_idx < 0 || worker_idx >= MAX_WORKERS) {
-        return false;
-    }
-    // sem_getvalue returns -1 on error
-    if (sem_getvalue(sem_request_items[worker_idx], &size) == -1) {
-        return false;
-    }
-    return true;
-}
-
-// Dequeues a request for a specific worker
+// Dequeues a request for a specific worker. Worker use this to get the prompt data from server. the data is in ReqSlot. This is blocking call.
 bool IPCManager::dequeue_request(int worker_idx, ReqSlot& slot) {
-    if (!shared_mem_ptr || worker_idx < 0 || worker_idx >= MAX_WORKERS) return false;
-    
-    if (is_shutdown_requested()) {
-        return false;
-    }
-    
     if (sem_wait(sem_request_items[worker_idx]) == -1) {    // Block until there is an item available
         // EINTR is ok, it means the wait was interrupted by a signal (e.g., SIGTERM)
-        if (errno != EINTR) {
-             std::cerr << "Worker " << worker_idx << " failed to wait for items: " << strerror(errno) << std::endl;
-        }
-        return false;
-    }
-    
-    if (is_shutdown_requested()) {
+        if (errno != EINTR) {std::cerr << "Worker " << worker_idx << " failed to wait for items: " << strerror(errno) << std::endl;}
         return false;
     }
     
@@ -246,23 +194,20 @@ bool IPCManager::dequeue_request(int worker_idx, ReqSlot& slot) {
     size_t tail_val = queue.tail.fetch_add(1);
     ReqSlot& req_slot = queue.req[tail_val % RING_CAP_PER_WORKER];
     
-    slot = req_slot;
-    
+    // Manually copy data since std::atomic makes ReqSlot non-copyable
+    slot.task_id = req_slot.task_id;
+    slot.len = req_slot.len;
+    std::memcpy(slot.data, req_slot.data, slot.len);
+    slot.data[slot.len] = '\0';
+    slot.is_canceled.store(req_slot.is_canceled.load());
+
     return true;
 }
 
+// Used by worker to send response chunk to server. Wait server to post sem_resp_consumed, then Load shared memory response slot, then fill up RespSlot
 bool IPCManager::send_response_chunk(int worker_idx, uint64_t task_id, const std::string& chunk, bool is_last) {
-    if (!shared_mem_ptr || worker_idx < 0 || worker_idx >= MAX_WORKERS) return false;    
-    if (chunk.length() >= CHUNK_SIZE) {
-        std::cerr << "Result chunk too large: " << chunk.length() << " >= " << CHUNK_SIZE << std::endl;
-        return false;
-    }
-
-    if (sem_wait(sem_resp_consumed[worker_idx]) == -1) {
-        std::cerr << "Failed to wait for response consumption signal from worker " << worker_idx << ": " << strerror(errno) << std::endl;
-        return false;
-    }
-
+    // wait until sem_resp_consumed gets posted by the server, then we send another chunk
+    if (sem_wait(sem_resp_consumed[worker_idx]) == -1) {DEBUG_CERR("Failed to wait for response consumption signal from worker " << worker_idx << ": " << strerror(errno)); return false;}
     RespSlot& slot = shared_mem_ptr->resp_slots[worker_idx];
     slot.task_id.store(task_id);
     slot.len = static_cast<uint32_t>(chunk.length());
@@ -271,25 +216,75 @@ bool IPCManager::send_response_chunk(int worker_idx, uint64_t task_id, const std
     slot.data[chunk.length()] = '\0';
     
     sem_post(sem_resp[worker_idx]);
-    
     return true;
 }
 
+
+// Used by client to wait get the token chunk from worker. This is blocking call
+// It works by loading worker response slot, then match the task_id. if not match, wake up another thread, hopefully the owner of correct task_id, then sleep this thread.
+bool IPCManager::wait_for_response_chunk(int worker_idx, uint64_t task_id, std::string& chunk, bool& is_last) {
+    while (true) {
+        if (sem_wait(sem_resp[worker_idx]) == -1) {DEBUG_CERR("Failed to wait for response from worker " << worker_idx << ": " << strerror(errno));return false;}
+        
+        RespSlot& slot = shared_mem_ptr->resp_slots[worker_idx];
+        uint64_t received_task_id = slot.task_id.load();
+        
+        if (received_task_id == task_id) {
+            chunk.assign(slot.data, slot.len);
+            is_last = slot.is_last_piece;
+            sem_post(sem_resp_consumed[worker_idx]); // Signal worker: chunk consumed, you can now write the next one. worker wait for this to be posted before sending another chunk
+            return true;
+        } else {
+            // This is not the chunk we are looking for. Post back to the response semaphore to wake up another waiting thread.
+            sem_post(sem_resp[worker_idx]);
+            // Yield to give other threads a chance to run and check the chunk.
+            std::this_thread::sleep_for(std::chrono::milliseconds(25));
+        }
+    }
+}
+
+/* -----------------------------------------------------------------Utility section----------------------------------------------------------------------------------*/
+
+// Get the number of requests in the worker's request queue. Mainly for load balancing, looking for worker with the least requests in queue.
+bool IPCManager::get_request_queue_size(int worker_idx, int& size) const {
+    if (sem_getvalue(sem_request_items[worker_idx], &size) == -1) {return false;}// sem_getvalue returns -1 on error
+    return true;
+}
+
+void IPCManager::cancel_request(int worker_idx, uint64_t task_id) {
+    if (!shared_mem_ptr) return;
+
+    RequestQueue& queue = shared_mem_ptr->worker_queues[worker_idx];
+    
+    // This is a best-effort cancellation. We search for the task in the queue.
+    // There's a chance the worker has already dequeued it.
+    size_t head = queue.head.load();
+    size_t tail = queue.tail.load();
+
+    for (size_t i = tail; i < head; ++i) {
+        ReqSlot& slot = queue.req[i % RING_CAP_PER_WORKER];
+        if (slot.task_id == task_id) {
+            slot.is_canceled.store(true);
+            break;
+        }
+    }
+}
+
+// Signaling that a request has been handled. Worker use this to signal the server that it has finished processing the request. increment sem_req_space.
 void IPCManager::signal_request_handled(int worker_idx) {
-    if (worker_idx < 0 || worker_idx >= MAX_WORKERS) return;
     sem_post(sem_req_space[worker_idx]);
 }
 
-
+// Check if the server has requested a shutdown. Used by worker to check if it should shutdown.
 bool IPCManager::is_shutdown_requested() const {
     return shared_mem_ptr && shared_mem_ptr->shutdown_flag.load();
 }
 
+// Request a shutdown. Used by server to request a shutdown.
 void IPCManager::request_shutdown() {
     if (shared_mem_ptr) {
         shared_mem_ptr->shutdown_flag.store(true);   // command the workers to shutdown
-        
-        // Wake up all waiting workers
+        // Wake up all waiting workers process, 
         for (int i = 0; i < MAX_WORKERS; ++i) {
             sem_post(sem_request_items[i]);
         }

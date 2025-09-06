@@ -27,14 +27,14 @@ void signal_handler(int signal) {
 
 
 
-void llm_process_and_send_chunked_response(IPCManager& ipc_manager, int worker_index, ReqSlot& request){
+void llm_process_and_send_chunked_response(IPCManager& ipc_manager, int worker_index, ReqSlot& request, TinyLLM& llm){
     std::string current_input(request.data, request.len);
 
     ipc_manager.send_response_chunk(worker_index, request.task_id, current_input, false); // optional, send back the promt
 
-    TinyLLM llm;
+    
     llm.init(current_input);
-    int max_tokens = 50;
+    int max_tokens = 24 + (std::rand() % 16); // add random number between 0-15
     const int eos_token_id = 3;
     int generated_tokens = 0;
     int next_token = -1; // Start with -1 to indicate first inference
@@ -54,6 +54,9 @@ void llm_process_and_send_chunked_response(IPCManager& ipc_manager, int worker_i
         if (!ipc_manager.send_response_chunk(worker_index, request.task_id, result_piece, is_last_iteration)) {
             DEBUG_CERR("Worker " << worker_index << " failed to send response chunk for task " << request.task_id << std::endl);
             ipc_manager.signal_request_handled(worker_index);
+            return;
+        }
+        if (ipc_manager.is_shutdown_requested()){
             return;
         }
         generated_tokens++;
@@ -100,6 +103,8 @@ void simple_process_and_send_chunked_response(IPCManager& ipc_manager, int worke
 
 
 int main(int argc, char* argv[]) {  // argc is argument count(including program name). argv is argument vector. format : executable --index=process_index
+    TinyLLM llm;
+
     std::string arg = argv[1];
     int worker_index = std::atoi(arg.substr(8).c_str());   // extract process index from argument vector
 
@@ -133,9 +138,16 @@ int main(int argc, char* argv[]) {  // argc is argument count(including program 
             continue;
         }
         
+        // Check if the task has been canceled by the server
+        if (request.is_canceled.load()) {
+            DEBUG_COUT("Worker #" << worker_index << " skipping canceled task " << request.task_id);
+            ipc_manager.signal_request_handled(worker_index); // Still need to signal that we are done with this slot
+            continue;
+        }
+
         DEBUG_COUT("Worker #" << worker_index << " processing task " << request.task_id << " (message: \"" << std::string(request.data, request.len) << "\")" << std::endl);
         
-        llm_process_and_send_chunked_response(ipc_manager, worker_index, request);
+        llm_process_and_send_chunked_response(ipc_manager, worker_index, request, llm);
         // simple_process_and_send_chunked_response(ipc_manager, worker_index, request);
         processed_count++;
         DEBUG_COUT("Worker #" << worker_index << " completed task " << request.task_id << std::endl);

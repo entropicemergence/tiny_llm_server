@@ -16,6 +16,8 @@ TinyLLM::TinyLLM()
                                  TransformerParameters::n_head, TransformerParameters::n_layer,
                                  TransformerParameters::max_context, TransformerParameters::dropout);
     tokenizer = new HybridTokenizer();
+    tokenizer->load_vocab(TransformerParameters::tokenizer_path);
+    transformer->load_weights(TransformerParameters::model_path);
 }
 
 TinyLLM::~TinyLLM() {
@@ -24,8 +26,6 @@ TinyLLM::~TinyLLM() {
 }
 
 void TinyLLM::init(const std::string& initial_prompt) {
-    tokenizer->load_vocab(TransformerParameters::tokenizer_path);
-    transformer->load_weights(TransformerParameters::model_path);
     if (!initial_prompt.empty()) {
         token_ids = tokenizer->encode(initial_prompt);
     }

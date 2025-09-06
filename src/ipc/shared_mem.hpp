@@ -20,23 +20,24 @@ constexpr const char* SEM_RESP_CONSUMED_PREFIX = "/sem_resp_consumed_"; // Semap
 
 // Request slot structure,
 struct ReqSlot {
-    uint64_t task_id;           // Unique task identifier
+    std::atomic<bool> is_canceled;  // flag in case of request cancellation (e.g. client disconnect). as signal for worker to pass this ReqSlot inside the ring buffer
+    uint64_t task_id;           // Unique task, identifier, unique per client / thread that execute it
     uint32_t len;               // Message length
-    char data[CHUNK_SIZE];      // Message data
-    
-    ReqSlot() : task_id(0), len(0) {
+    char data[CHUNK_SIZE];      // Message data, this is client's prompt
+    ReqSlot() : task_id(0), len(0), is_canceled(false) {
         data[0] = '\0';        // treat the data as empty null-terminated string
     }
 };
 
+// written by worker, read by client
 struct RespSlot {
     std::atomic<uint64_t> task_id;
     uint32_t len;               // Chunk length
-    char data[CHUNK_SIZE];      // Result data
+    char data[CHUNK_SIZE];      // Result data, written by worker, response token chunks
     bool is_last_piece;         // True if this is the last piece of the result
     
     RespSlot() : task_id(0), len(0), is_last_piece(false) {
-        data[0] = '\0';
+        data[0] = '\0'; // treat the data as empty null-terminated string
     }
 };
 

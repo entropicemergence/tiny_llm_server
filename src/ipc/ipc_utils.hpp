@@ -17,7 +17,7 @@ private:
     
     // Semaphores, auto increment by sem_post, auto decrement by sem_wait.
     sem_t* sem_request_items[MAX_WORKERS]; // Counts tasks in the queue. Acting as the counter for the number of requests in the queue. decrement by worker, increment by server.
-    sem_t* sem_req_space[MAX_WORKERS]; // Counts empty slots in the queue.
+    sem_t* sem_req_space[MAX_WORKERS]; // Counts empty slots in the queue. Counting down from RING_CAP_PER_WORKER to 0.
     sem_t* sem_resp[MAX_WORKERS];      // Counts responses from the worker.
     sem_t* sem_resp_consumed[MAX_WORKERS]; // Counts consumed response chunks.
     
@@ -40,6 +40,9 @@ public:
     
     // Get the current size of a worker's request queue
     bool get_request_queue_size(int worker_idx, int& size) const;
+
+    // Cancel a request
+    void cancel_request(int worker_idx, uint64_t task_id);
 
     // Worker operations
     // Dequeue a request for this worker
