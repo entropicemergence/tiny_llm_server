@@ -3,6 +3,8 @@
 #include <cstring>
 #include <errno.h>
 #include <sstream>
+#include <thread>
+#include <chrono>
 
 
 #ifdef DEBUG_PRINT
@@ -184,29 +186,43 @@ bool IPCManager::enqueue_request(int worker_idx, const std::string& message, uin
 bool IPCManager::wait_for_response_chunk(int worker_idx, uint64_t task_id, std::string& chunk, bool& is_last) {
     if (!shared_mem_ptr || worker_idx < 0 || worker_idx >= MAX_WORKERS) return false;
     
-    if (sem_wait(sem_resp[worker_idx]) == -1) {
-        std::cerr << "Failed to wait for response from worker " << worker_idx << ": " << strerror(errno) << std::endl;
+    while (true) {
+        if (sem_wait(sem_resp[worker_idx]) == -1) {
+            std::cerr << "Failed to wait for response from worker " << worker_idx << ": " << strerror(errno) << std::endl;
+            return false;
+        }
+        
+        RespSlot& slot = shared_mem_ptr->resp_slots[worker_idx];
+        
+        uint64_t received_task_id = slot.task_id.load();
+        
+        if (received_task_id == task_id) {
+            chunk.assign(slot.data, slot.len);
+            is_last = slot.is_last_piece;
+            sem_post(sem_resp_consumed[worker_idx]); // Signal worker: chunk consumed, you can now write the next one
+            return true;
+        } else {
+            // This is not the chunk we are looking for.
+            // Post back to the response semaphore to wake up another waiting thread.
+            sem_post(sem_resp[worker_idx]);
+            // Yield to give other threads a chance to run and check the chunk.
+            std::this_thread::sleep_for(std::chrono::milliseconds(25));
+        }
+    }
+}
+
+bool IPCManager::get_request_queue_size(int worker_idx, int& size) const {
+    if (worker_idx < 0 || worker_idx >= MAX_WORKERS) {
         return false;
     }
-    
-    RespSlot& slot = shared_mem_ptr->resp_slots[worker_idx];
-    
-    uint64_t received_task_id = slot.task_id.load();
-    
-    if (received_task_id != task_id) {
-        std::cerr << "Task ID mismatch: expected " << task_id << ", got " << received_task_id << std::endl;
-        sem_post(sem_resp_consumed[worker_idx]); // Release the lock
+    // sem_getvalue returns -1 on error
+    if (sem_getvalue(sem_request_items[worker_idx], &size) == -1) {
         return false;
     }
-    
-    chunk.assign(slot.data, slot.len);
-    is_last = slot.is_last_piece;
-    
-    sem_post(sem_resp_consumed[worker_idx]);
-    
     return true;
 }
 
+// Dequeues a request for a specific worker
 bool IPCManager::dequeue_request(int worker_idx, ReqSlot& slot) {
     if (!shared_mem_ptr || worker_idx < 0 || worker_idx >= MAX_WORKERS) return false;
     

@@ -8,28 +8,21 @@
 #include <csignal>
 #include <cerrno>
 
-#ifdef _WIN32
-    #include <winsock2.h>
-    #include <ws2tcpip.h>
-    #pragma comment(lib, "ws2_32.lib")
-    typedef int socklen_t;
-#else
-    #include <sys/socket.h>
-    #include <netinet/in.h>
-    #include <arpa/inet.h>
-    #include <unistd.h>
-    #include <netinet/tcp.h> // For TCP_NODELAY
-    #define SOCKET int
-    #define INVALID_SOCKET -1
-    #define SOCKET_ERROR -1
-    #define closesocket close
-#endif
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#include <netinet/tcp.h> // For TCP_NODELAY
+#define SOCKET int
+#define INVALID_SOCKET -1
+#define SOCKET_ERROR -1
+#define closesocket close
 
 
 #include "server/task_dispatcher.hpp"
 #include "utils/http_utils.hpp"
 
-#define DEBUG_PRINT
+// #define DEBUG_PRINT
 
 #ifdef DEBUG_PRINT
 #define DEBUG_COUT(x) std::cout << x << std::endl
@@ -57,19 +50,9 @@ public:
     }
     ~HttpInferenceServer() {
         if (serverSocket != INVALID_SOCKET) {closesocket(serverSocket);}    // Close socket
-#ifdef _WIN32
-        WSACleanup();                       // Clean up Winsock2
-#endif
     }
 
     bool initializeSocket() {
-#ifdef _WIN32
-        WSADATA wsaData;
-        if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {                                        // Initialize Winsock2
-            std::cerr << "WSAStartup failed" << std::endl;
-            return false;
-        }
-#endif
 
         serverSocket = socket(AF_INET, SOCK_STREAM, 0); // AF_INET is the Internet address family for IPv4, SOCK_STREAM specify the type as TCP, 0 is the protocol (let the os choose default for tcp)
         if (serverSocket == INVALID_SOCKET) {
@@ -88,11 +71,7 @@ public:
 
         if (bind(serverSocket, (sockaddr*)&serverAddr, sizeof(serverAddr)) == SOCKET_ERROR) {    // Bind socket to port
             std::cerr << "Bind failed on port " << port << std::endl;
-#ifdef _WIN32
-            std::cerr << "WSA Error: " << WSAGetLastError() << std::endl;
-#else
             perror("bind failed");
-#endif
             return false;
         }
 

@@ -1,18 +1,17 @@
 #include "worker_manager.hpp"
+#include "../ipc/ipc_utils.hpp"
+#include "../ipc/shared_mem.hpp"
 #include <iostream>
 #include <thread>
 #include <filesystem>
 #include <iomanip>
-#include <ctime>
 
-#ifndef _WIN32
-#include <sys/stat.h>
 #include <fcntl.h>
 #include <errno.h>
 #include <cstring>
-#endif
+#include <signal.h>
 
-#define DEBUG_PRINT
+// #define DEBUG_PRINT
 
 #ifdef DEBUG_PRINT
 #define DEBUG_COUT(x) std::cout << x << std::endl
@@ -21,8 +20,8 @@
 #endif
 
 
-WorkerManager::WorkerManager(const std::string& worker_exec_path, int min_w, int max_w)
-    : active_worker_count(0), min_workers(min_w), max_workers(max_w), 
+WorkerManager::WorkerManager(IPCManager* ipc, const std::string& worker_exec_path, int min_w, int max_w)
+    : ipc_manager(ipc), active_worker_count(0), min_workers(min_w), max_workers(max_w), 
       worker_executable_path(worker_exec_path), pending_requests(0), total_requests_processed(0) {
     std::cout << "Building WorkerManager with: min=" << min_w << ", max=" << max_w 
               << ", executable=" << worker_exec_path << std::endl;
@@ -71,14 +70,12 @@ void WorkerManager::cleanup() {
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
     
     // Force kill any remaining workers
-#ifndef _WIN32
     for (int i = 0; i < MAX_WORKERS; ++i) {
         if (workers[i] && workers[i]->pid > 0) {
             kill(workers[i]->pid, SIGKILL);
             waitpid(workers[i]->pid, nullptr, WNOHANG);
         }
     }
-#endif
     
     workers.clear();
     active_worker_count.store(0);
@@ -96,10 +93,6 @@ bool WorkerManager::spawn_worker(int worker_index) {
         return true;
     }
     
-#ifdef _WIN32
-    std::cerr << "Worker spawning not implemented on Windows yet" << std::endl;
-    return false;
-#else
     DEBUG_COUT("Spawning worker " << worker_index << "...");
     
     pid_t pid = fork();
@@ -136,9 +129,8 @@ bool WorkerManager::spawn_worker(int worker_index) {
     
     // Give worker a moment to initialize
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    
+
     return true;
-#endif
 }
 
 bool WorkerManager::terminate_worker(int worker_index) {
@@ -146,14 +138,13 @@ bool WorkerManager::terminate_worker(int worker_index) {
         return false;
     }
     
-#ifndef _WIN32
     pid_t pid = workers[worker_index]->pid;
     if (pid > 0) {
         DEBUG_COUT("Terminating worker " << worker_index << " (PID " << pid << ")");
-        
+
         // Send SIGTERM for graceful shutdown
         kill(pid, SIGTERM);
-        
+
         // Wait for worker to exit
         int status;
         if (waitpid(pid, &status, WNOHANG) == 0) {
@@ -165,10 +156,9 @@ bool WorkerManager::terminate_worker(int worker_index) {
                 waitpid(pid, &status, 0);
             }
         }
-        
+
         DEBUG_COUT("Worker " << worker_index << " terminated");
     }
-#endif
     
     workers[worker_index].reset();
     active_worker_count.fetch_sub(1);
@@ -195,22 +185,52 @@ void WorkerManager::on_request_complete(int worker_index) {
     }
 }
 
-int WorkerManager::get_next_worker_round_robin() {
+int WorkerManager::find_least_loaded_worker() {
+    int least_loaded_worker = -1;
+    int min_queue_size = -1;
+
+    for (int i = 0; i < MAX_WORKERS; ++i) {
+        if (is_worker_deployed(i)) {
+            int current_queue_size = 0;
+            if (ipc_manager->get_request_queue_size(i, current_queue_size)) {
+                if (least_loaded_worker == -1 || current_queue_size < min_queue_size) {
+                    min_queue_size = current_queue_size;
+                    least_loaded_worker = i;
+                }
+            }
+        }
+    }
+    return least_loaded_worker;
+}
+
+int WorkerManager::assign_task_to_worker() {
+    // 1. Find an idle worker (round-robin for fairness)
     static std::atomic<int> round_robin_counter(0);
-    
-    // The loop is a safeguard to ensure we check every worker slot if necessary.
-    // In most cases, an active worker will be found in the first few iterations.
     for (int i = 0; i < MAX_WORKERS; ++i) {
         int worker_idx = round_robin_counter.fetch_add(1) % MAX_WORKERS;
-        // if (is_worker_active(worker_idx)) {
         if (is_worker_deployed(worker_idx) && !workers[worker_idx]->is_active.load()) {
             return worker_idx;
         }
     }
-    
-    // No active workers found - this shouldn't happen if we maintain min_workers
-    DEBUG_COUT("Warning: No idle workers found!");
-    return -1;
+
+    // 2. If no idle workers, try to scale up
+    if (active_worker_count.load() < max_workers.load()) {
+        for (int i = 0; i < MAX_WORKERS; ++i) {
+            if (!is_worker_deployed(i)) {
+                DEBUG_COUT("Scaling up on demand: adding worker " << i);
+                if (spawn_worker(i)) {
+                    return i; // Return new worker immediately
+                } else {
+                    // Failed to spawn, proceed to find least loaded instead.
+                    break; 
+                }
+            }
+        }
+    }
+
+    // 3. If at max workers or spawn failed, find the least loaded one
+    DEBUG_COUT("All workers busy and at max capacity. Finding least loaded worker...");
+    return find_least_loaded_worker();
 }
 
 void WorkerManager::check_and_scale() {
@@ -226,26 +246,13 @@ void WorkerManager::check_and_scale() {
     
     DEBUG_COUT("Scaling check: " << current_workers << " workers, " << current_pending << " pending requests");
 
-    
-    // Scale up if needed
-    if (should_scale_up() && current_workers < max_workers.load()) {
-        // Find next available worker slot
-        for (int i = 0; i < MAX_WORKERS; ++i) {
-            if (!is_worker_deployed(i)) {
-                DEBUG_COUT("Scaling up: adding worker " << i);
-                spawn_worker(i);
-                break;
-            }
-        }
-    }
-    
     // Scale down if needed
-    else if (should_scale_down() && current_workers > min_workers.load()) {
+    if (should_scale_down() && current_workers > min_workers.load()) {
         // Find an idle worker to terminate
-        auto now = std::chrono::steady_clock::now();
+        auto now_idle = std::chrono::steady_clock::now();
         for (int i = MAX_WORKERS - 1; i >= 0; --i) {  // Start from highest index
             if (workers[i] && is_worker_deployed(i) && !workers[i]->is_active.load()) {
-                auto idle_time = now - workers[i]->last_activity;
+                auto idle_time = now_idle - workers[i]->last_activity;
                 if (idle_time > WORKER_IDLE_TIMEOUT) {
                     DEBUG_COUT("Scaling down: removing idle worker " << i);
                     terminate_worker(i);
@@ -261,16 +268,12 @@ bool WorkerManager::is_worker_healthy(int worker_index) {
         return false;
     }
     
-#ifndef _WIN32
     pid_t pid = workers[worker_index]->pid;
     if (pid <= 0) return false;
-    
+
     // Check if process is still alive
     int result = kill(pid, 0);  // Signal 0 just checks if process exists
     return result == 0;
-#else
-    return true;  // Simplified for Windows
-#endif
 }
 
 void WorkerManager::restart_unhealthy_workers() {
@@ -299,15 +302,6 @@ void WorkerManager::update_worker_activity(int worker_index) {
     if (worker_index >= 0 && worker_index < MAX_WORKERS && workers[worker_index]) {
         workers[worker_index]->last_activity = std::chrono::steady_clock::now();
     }
-}
-
-bool WorkerManager::should_scale_up() const {
-    int current_pending = pending_requests.load();
-    int current_workers = active_worker_count.load();
-    
-    // Scale up if we have too many pending requests relative to workers
-    return current_pending > SCALE_UP_THRESHOLD && 
-           current_workers < max_workers.load();
 }
 
 bool WorkerManager::should_scale_down() const {

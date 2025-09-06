@@ -1,7 +1,6 @@
 #include "simple_worker.hpp"
 #include <algorithm>
 #include <cctype>
-#include <ctime>
 #include <random>
 
 std::string WorkerProcess::process_message(const std::string& input) {

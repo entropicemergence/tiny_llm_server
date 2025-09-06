@@ -3,17 +3,11 @@
 #include "shared_mem.hpp"
 #include <string>
 
-#ifdef _WIN32
-    // Windows implementation would use named pipes/memory mapped files
-    // For now, focus on POSIX implementation
-    #error "Windows IPC not implemented yet - use POSIX system"
-#else
-    #include <semaphore.h>
-    #include <sys/mman.h>
-    #include <sys/stat.h>
-    #include <fcntl.h>
-    #include <unistd.h>
-#endif
+#include <semaphore.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 // IPC Manager class for handling shared memory and semaphores
 class IPCManager {
@@ -44,6 +38,9 @@ public:
     // Wait for a response chunk from a specific worker
     bool wait_for_response_chunk(int worker_idx, uint64_t task_id, std::string& chunk, bool& is_last);
     
+    // Get the current size of a worker's request queue
+    bool get_request_queue_size(int worker_idx, int& size) const;
+
     // Worker operations
     // Dequeue a request for this worker
     bool dequeue_request(int worker_idx, ReqSlot& slot);
