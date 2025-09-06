@@ -12,42 +12,25 @@ static IPCManager* g_ipc_manager = nullptr;
 
 // Signal handler for graceful shutdown
 void signal_handler(int signal) {
-    std::cout << "\nWorker received signal " << signal << ", shutting down..." << std::endl;
     keep_running = false;
-    if (g_ipc_manager) {
-        // Note: This is not fully signal-safe, but good enough for this demo
-        g_ipc_manager->request_shutdown();
-    }
 }
 
-void print_usage(const char* program_name) {
-    std::cout << "Usage: " << program_name << " --index=<worker_index>" << std::endl;
-    std::cout << "  worker_index: 0 to " << (MAX_WORKERS - 1) << std::endl;
+
+std::string produce_chunked_response(IPCManager& ipc_manager, int worker_index, ReqSlot& request){
+    // Process the message
+    std::string input(request.data, request.len);
+    std::string result = WorkerProcess::process_message(input);
+    ipc_manager.send_response(worker_index, request.task_id, result);
+    return result;
 }
 
-int main(int argc, char* argv[]) {
-    // Parse command line arguments
-    if (argc != 2) {
-        print_usage(argv[0]);
-        return 1;
-    }
-    
+
+int main(int argc, char* argv[]) {  // argc is argument count(including program name). argv is argument vector. format : executable --index=process_index
     std::string arg = argv[1];
-    if (arg.find("--index=") != 0) {
-        print_usage(argv[0]);
-        return 1;
-    }
-    
-    int worker_index = std::atoi(arg.substr(8).c_str());
-    if (worker_index < 0 || worker_index >= MAX_WORKERS) {
-        std::cerr << "Error: worker_index must be between 0 and " << (MAX_WORKERS - 1) << std::endl;
-        return 1;
-    }
-    
-    std::cout << "Starting Worker #" << worker_index << std::endl;
-    
-    // Set up signal handlers
-    signal(SIGINT, signal_handler);
+    int worker_index = std::atoi(arg.substr(8).c_str());   // extract process index from argument vector
+
+    // // Set up signal handlers
+    // signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
     
     // Initialize IPC
@@ -79,16 +62,8 @@ int main(int argc, char* argv[]) {
         std::cout << "Worker #" << worker_index << " processing task " << request.task_id 
                   << " (message: \"" << std::string(request.data, request.len) << "\")" << std::endl;
         
-        // Process the message
-        std::string input(request.data, request.len);
-        std::string result = WorkerProcess::process_message(input);
-        
-        // Send response back
-        if (!ipc_manager.send_response(worker_index, request.task_id, result)) {
-            std::cerr << "Failed to send response for task " << request.task_id << std::endl;
-            continue;
-        }
-        
+
+        std::string result = produce_chunked_response(ipc_manager, worker_index, request);
         processed_count++;
         std::cout << "Worker #" << worker_index << " completed task " << request.task_id 
                   << " (result: \"" << result << "\")" << std::endl;

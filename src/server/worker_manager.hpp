@@ -68,7 +68,7 @@ public:
     void check_and_scale();
     
     // Get worker for task assignment (round-robin among active workers)
-    int get_next_worker();
+    int get_next_worker_round_robin();
     
     // Health monitoring
     bool is_worker_healthy(int worker_index);
@@ -76,10 +76,11 @@ public:
     
     // Statistics
     void print_stats() const;
+    // void start_realtime_monitor(int refresh_interval_ms = 1000) const;
     
 private:
     // Helper methods
-    bool is_worker_active(int worker_index) const;
+    bool is_worker_deployed(int worker_index) const;
     void update_worker_activity(int worker_index);
     int count_idle_workers() const;
     bool should_scale_up() const;

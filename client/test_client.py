@@ -7,7 +7,7 @@ import threading
 import random
 
 NUM_THREADS = 10
-MAX_REQUESTS = 1000
+MAX_REQUESTS = 300
 
 
 list_of_of_prompt = ["Once upon a time", "They were", "Every day", "They like to", "One day,", "They want to be",
@@ -29,10 +29,21 @@ def test_process(message, thread_id, request_id):
         start_time = time.time()
         # Use the opener to make the request
         response = opener.open(req, timeout=10)
-        latency = time.time() - start_time
         
-        result = json.loads(response.read().decode())
-        print(f"T {thread_id} | {request_id}: Result: {result['result']} Latency: {latency*1000:.2f} ms")
+        # urllib handles chunked-encoding automatically. We just need to read the stream.
+        full_data = b''
+        print(f"T {thread_id} | {request_id}: Result: ", end='', flush=True)
+        while True:
+            chunk = response.read(1024) # Read in 1KB chunks
+            if not chunk:
+                break
+            print(chunk.decode('utf-8', errors='ignore'), end='', flush=True)
+            full_data += chunk
+
+        latency = time.time() - start_time
+        # The result is already streamed, just print a newline and latency.
+        print()
+        print(f"T {thread_id} | {request_id}: Latency: {latency*1000:.2f} ms")
     except Exception as e:
         print(f"T {thread_id} | {request_id}: Process failed: {e}")
 
@@ -62,6 +73,8 @@ def worker_thread(thread_id, num_requests_per_thread):
 
     for i in range(num_requests_per_thread):
         prompt = list_of_of_prompt[random.randint(0, len(list_of_of_prompt)-1)]
+        for j in range(10):
+            prompt += list_of_of_prompt[random.randint(0, len(list_of_of_prompt)-1)]
         print(f"T {thread_id} | {i}: testing with message '{prompt}'")
         test_process(prompt, thread_id, i)
         # test_completion(prompt, thread_id, i)

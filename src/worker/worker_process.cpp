@@ -5,21 +5,13 @@
 #include <random>
 
 std::string WorkerProcess::process_message(const std::string& input) {
-    if (input.empty()) {
-        return "ERROR: Empty input";
-    }
-    
-    // Process: reverse and uppercase
     std::string reversed = reverse_string(input);
     std::string result = to_uppercase(reversed);
-    
-    // Add processing prefix to show it was handled by worker
     return "WORKER_PROCESSED: " + result;
 }
 
 std::string WorkerProcess::reverse_string(const std::string& str) {
     std::string shuffled = str;
-    // Properly shuffle the string using modern C++ random facilities
     for (int i = 0; i < 100000; i++) {
         std::random_device rd;
         std::mt19937 gen(rd());

@@ -17,33 +17,33 @@ constexpr const char* SEM_REQ_ITEMS_PREFIX = "/sem_req_items_";
 constexpr const char* SEM_REQ_SPACE_PREFIX = "/sem_req_space_";
 constexpr const char* SEM_RESP_PREFIX = "/sem_resp_";    // Response semaphores (per worker)
 
-// Request slot structure
+// Request slot structure,
 struct ReqSlot {
     uint64_t task_id;           // Unique task identifier
     uint32_t len;               // Message length
     char data[CHUNK_SIZE];      // Message data
     
     ReqSlot() : task_id(0), len(0) {
-        data[0] = '\0';
+        data[0] = '\0';        // treat the data as empty null-terminated string
     }
 };
 
-// Response slot structure
 struct RespSlot {
     std::atomic<uint64_t> task_id;
-    uint32_t len;               // Result length
+    uint32_t len;               // Chunk length
     char data[CHUNK_SIZE];      // Result data
+    bool is_last_piece;         // True if this is the last piece of the result
     
-    RespSlot() : task_id(0), len(0) {
+    RespSlot() : task_id(0), len(0), is_last_piece(false) {
         data[0] = '\0';
     }
 };
 
 // A request queue for a single worker
 struct RequestQueue {
-    ReqSlot req[RING_CAP_PER_WORKER];
-    std::atomic<size_t> head; // written by server
-    std::atomic<size_t> tail; // written by worker
+    ReqSlot req[RING_CAP_PER_WORKER];   // ring buffer
+    std::atomic<size_t> head; // written by server, tracking the next position to write, loop back with % RING_CAP_PER_WORKER
+    std::atomic<size_t> tail; // written by worker, tracking the next position to read, loop back with % RING_CAP_PER_WORKER
 };
 
 // Main shared memory structure

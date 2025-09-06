@@ -19,13 +19,13 @@
 // IPC Manager class for handling shared memory and semaphores
 class IPCManager {
 private:
-    SharedMem* shm_ptr;
-    int shm_fd;
+    SharedMem* shared_mem_ptr;
+    int shared_mem_file_descriptor;
     
-    // Semaphores
-    sem_t* sem_req_items[MAX_WORKERS]; // One per worker queue
-    sem_t* sem_req_space[MAX_WORKERS]; // One per worker queue
-    sem_t* sem_resp[MAX_WORKERS];      // One per worker
+    // Semaphores, auto increment by sem_post, auto decrement by sem_wait.
+    sem_t* sem_request_items[MAX_WORKERS]; // Counts tasks in the queue. Acting as the counter for the number of requests in the queue. decrement by worker, increment by server.
+    sem_t* sem_req_space[MAX_WORKERS]; // Counts empty slots in the queue.
+    sem_t* sem_resp[MAX_WORKERS];      // Counts responses from the worker.
     
     bool is_server;
     int worker_index; // Only used by worker
@@ -36,10 +36,7 @@ public:
     
     // Initialize shared memory and semaphores
     bool initialize();
-    
-    // Cleanup resources
-    void cleanup();
-    
+        
     // Server operations
     // Enqueue a request for a specific worker
     bool enqueue_request(int worker_idx, const std::string& message, uint64_t& task_id);
@@ -60,5 +57,5 @@ public:
     uint64_t get_next_task_id();
     
     // Getters
-    SharedMem* get_shared_mem() const { return shm_ptr; }
+    SharedMem* get_shared_mem() const { return shared_mem_ptr; }
 };

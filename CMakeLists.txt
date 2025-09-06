@@ -34,6 +34,7 @@ add_library(worker_lib
 add_library(server_lib
     src/server/task_dispatcher.cpp
     src/server/worker_manager.cpp
+    src/utils/http_utils.cpp
 )
 
 # Create server executable
@@ -70,6 +71,7 @@ target_link_libraries(server
     # oatpp
     Threads::Threads
 )
+#target_compile_definitions(server PRIVATE DEBUG_PRINT)
 
 # Link libraries for worker
 target_link_libraries(worker

@@ -77,3 +77,4 @@ echo "Press any key to continue..."
 
 
 # build_linux/inference
+build_linux/server

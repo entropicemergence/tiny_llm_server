@@ -1,9 +1,9 @@
 #include "worker_manager.hpp"
 #include <iostream>
-#include <algorithm>
 #include <thread>
-#include <sstream>
 #include <filesystem>
+#include <iomanip>
+#include <ctime>
 
 #ifndef _WIN32
 #include <sys/stat.h>
@@ -11,6 +11,15 @@
 #include <errno.h>
 #include <cstring>
 #endif
+
+#define DEBUG_PRINT
+
+#ifdef DEBUG_PRINT
+#define DEBUG_COUT(x) std::cout << x << std::endl
+#else
+#define DEBUG_COUT(x)
+#endif
+
 
 WorkerManager::WorkerManager(const std::string& worker_exec_path, int min_w, int max_w)
     : active_worker_count(0), min_workers(min_w), max_workers(max_w), 
@@ -53,7 +62,7 @@ void WorkerManager::cleanup() {
     
     // Terminate all active workers
     for (int i = 0; i < MAX_WORKERS; ++i) {
-        if (workers[i] && is_worker_active(i)) {
+        if (workers[i] && is_worker_deployed(i)) {
             terminate_worker(i);
         }
     }
@@ -78,12 +87,12 @@ void WorkerManager::cleanup() {
 
 bool WorkerManager::spawn_worker(int worker_index) {
     if (worker_index < 0 || worker_index >= MAX_WORKERS) {
-        std::cerr << "Invalid worker index: " << worker_index << std::endl;
+        DEBUG_COUT("Invalid worker index: " << worker_index);
         return false;
     }
     
-    if (workers[worker_index] && is_worker_active(worker_index)) {
-        std::cout << "Worker " << worker_index << " is already active" << std::endl;
+    if (workers[worker_index] && is_worker_deployed(worker_index)) {
+        DEBUG_COUT("Worker " << worker_index << " is already active");
         return true;
     }
     
@@ -91,7 +100,7 @@ bool WorkerManager::spawn_worker(int worker_index) {
     std::cerr << "Worker spawning not implemented on Windows yet" << std::endl;
     return false;
 #else
-    std::cout << "Spawning worker " << worker_index << "..." << std::endl;
+    DEBUG_COUT("Spawning worker " << worker_index << "...");
     
     pid_t pid = fork();
     if (pid == -1) {
@@ -123,7 +132,7 @@ bool WorkerManager::spawn_worker(int worker_index) {
     workers[worker_index] = std::make_unique<WorkerInfo>(pid, worker_index);
     active_worker_count.fetch_add(1);
     
-    std::cout << "Worker " << worker_index << " spawned with PID " << pid << std::endl;
+    DEBUG_COUT("Worker " << worker_index << " spawned with PID " << pid);
     
     // Give worker a moment to initialize
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -140,7 +149,7 @@ bool WorkerManager::terminate_worker(int worker_index) {
 #ifndef _WIN32
     pid_t pid = workers[worker_index]->pid;
     if (pid > 0) {
-        std::cout << "Terminating worker " << worker_index << " (PID " << pid << ")" << std::endl;
+        DEBUG_COUT("Terminating worker " << worker_index << " (PID " << pid << ")");
         
         // Send SIGTERM for graceful shutdown
         kill(pid, SIGTERM);
@@ -157,7 +166,7 @@ bool WorkerManager::terminate_worker(int worker_index) {
             }
         }
         
-        std::cout << "Worker " << worker_index << " terminated" << std::endl;
+        DEBUG_COUT("Worker " << worker_index << " terminated");
     }
 #endif
     
@@ -186,21 +195,21 @@ void WorkerManager::on_request_complete(int worker_index) {
     }
 }
 
-int WorkerManager::get_next_worker() {
+int WorkerManager::get_next_worker_round_robin() {
     static std::atomic<int> round_robin_counter(0);
     
-    // Find next active worker using round-robin
-    int start_idx = round_robin_counter.fetch_add(1) % MAX_WORKERS;
-    
+    // The loop is a safeguard to ensure we check every worker slot if necessary.
+    // In most cases, an active worker will be found in the first few iterations.
     for (int i = 0; i < MAX_WORKERS; ++i) {
-        int worker_idx = (start_idx + i) % MAX_WORKERS;
-        if (is_worker_active(worker_idx)) {
+        int worker_idx = round_robin_counter.fetch_add(1) % MAX_WORKERS;
+        // if (is_worker_active(worker_idx)) {
+        if (is_worker_deployed(worker_idx) && !workers[worker_idx]->is_active.load()) {
             return worker_idx;
         }
     }
     
     // No active workers found - this shouldn't happen if we maintain min_workers
-    std::cerr << "Warning: No active workers found!" << std::endl;
+    DEBUG_COUT("Warning: No idle workers found!");
     return -1;
 }
 
@@ -215,15 +224,15 @@ void WorkerManager::check_and_scale() {
     int current_workers = active_worker_count.load();
     int current_pending = pending_requests.load();
     
-    std::cout << "Scaling check: " << current_workers << " workers, " 
-              << current_pending << " pending requests" << std::endl;
+    DEBUG_COUT("Scaling check: " << current_workers << " workers, " << current_pending << " pending requests");
+
     
     // Scale up if needed
     if (should_scale_up() && current_workers < max_workers.load()) {
         // Find next available worker slot
         for (int i = 0; i < MAX_WORKERS; ++i) {
-            if (!is_worker_active(i)) {
-                std::cout << "Scaling up: adding worker " << i << std::endl;
+            if (!is_worker_deployed(i)) {
+                DEBUG_COUT("Scaling up: adding worker " << i);
                 spawn_worker(i);
                 break;
             }
@@ -235,10 +244,10 @@ void WorkerManager::check_and_scale() {
         // Find an idle worker to terminate
         auto now = std::chrono::steady_clock::now();
         for (int i = MAX_WORKERS - 1; i >= 0; --i) {  // Start from highest index
-            if (workers[i] && is_worker_active(i) && !workers[i]->is_active.load()) {
+            if (workers[i] && is_worker_deployed(i) && !workers[i]->is_active.load()) {
                 auto idle_time = now - workers[i]->last_activity;
                 if (idle_time > WORKER_IDLE_TIMEOUT) {
-                    std::cout << "Scaling down: removing idle worker " << i << std::endl;
+                    DEBUG_COUT("Scaling down: removing idle worker " << i);
                     terminate_worker(i);
                     break;
                 }
@@ -248,7 +257,7 @@ void WorkerManager::check_and_scale() {
 }
 
 bool WorkerManager::is_worker_healthy(int worker_index) {
-    if (worker_index < 0 || worker_index >= MAX_WORKERS || !workers[worker_index]) {
+    if (!workers[worker_index]) {
         return false;
     }
     
@@ -267,7 +276,7 @@ bool WorkerManager::is_worker_healthy(int worker_index) {
 void WorkerManager::restart_unhealthy_workers() {
     for (int i = 0; i < MAX_WORKERS; ++i) {
         if (workers[i] && !is_worker_healthy(i)) {
-            std::cout << "Restarting unhealthy worker " << i << std::endl;
+            DEBUG_COUT("Restarting unhealthy worker " << i);
             terminate_worker(i);
             if (active_worker_count.load() < min_workers.load()) {
                 spawn_worker(i);
@@ -276,24 +285,181 @@ void WorkerManager::restart_unhealthy_workers() {
     }
 }
 
+
 void WorkerManager::print_stats() const {
-    std::cout << "\n=== Worker Manager Stats ===" << std::endl;
-    std::cout << "Active workers: " << active_worker_count.load() << "/" << max_workers.load() << std::endl;
-    std::cout << "Pending requests: " << pending_requests.load() << std::endl;
-    std::cout << "Total processed: " << total_requests_processed.load() << std::endl;
+    // ANSI color codes
+    const std::string RESET = "\033[0m";
+    const std::string BOLD = "\033[1m";
+    const std::string GREEN = "\033[32m";
+    const std::string YELLOW = "\033[33m";
+    const std::string RED = "\033[31m";
+    const std::string BLUE = "\033[34m";
+    const std::string CYAN = "\033[36m";
+    const std::string WHITE = "\033[37m";
+    const std::string BG_BLUE = "\033[44m";
+    const std::string BG_GREEN = "\033[42m";
+    const std::string BG_RED = "\033[41m";
+
+    std::cout << "\033[27A";
+        
+    std::cout << BG_BLUE << WHITE << BOLD << "  WORKER TASK MANAGER                                                             " << RESET << std::endl;
+    std::cout << std::endl;
     
-    for (int i = 0; i < MAX_WORKERS; ++i) {
-        if (workers[i] && is_worker_active(i)) {
-            std::cout << "  Worker " << i << ": PID=" << workers[i]->pid 
-                      << ", processed=" << workers[i]->tasks_processed.load()
-                      << ", active=" << (workers[i]->is_active.load() ? "yes" : "no") << std::endl;
+    // System overview
+    int active_count = active_worker_count.load();
+    int max_count = max_workers.load();
+    int pending_count = pending_requests.load();
+    int total_processed = total_requests_processed.load();
+    
+    // Calculate utilization
+    double worker_utilization = (active_count > 0) ? ((double)active_count / max_count * 100.0) : 0.0;
+    
+    std::cout << CYAN << BOLD << "┌─ SYSTEM OVERVIEW " << std::setfill('-') << std::setw(62) << "-┐" << RESET << std::endl;
+    std::cout << CYAN << "│" << RESET;
+    std::cout << " Workers Active: " << GREEN << BOLD << std::setfill(' ') << std::setw(3) << active_count 
+              << WHITE << "/" << max_count << RESET;
+    
+    // Worker utilization bar
+    std::cout << " [";
+    int bar_width = 20;
+    int filled = (int)(worker_utilization / 100.0 * bar_width);
+    for (int i = 0; i < bar_width; ++i) {
+        if (i < filled) {
+            if (worker_utilization > 80) std::cout << RED << "█" << RESET;
+            else if (worker_utilization > 50) std::cout << YELLOW << "█" << RESET;
+            else std::cout << GREEN << "█" << RESET;
+        } else {
+            std::cout << "░";
         }
     }
-    std::cout << "========================\n" << std::endl;
+    std::cout << "] " << std::fixed << std::setprecision(1) << worker_utilization << "%";
+    std::cout << CYAN << " │" << RESET << std::endl;
+    
+    std::cout << CYAN << "│" << RESET;
+    std::cout << " Pending Queue: " << YELLOW << BOLD << std::setfill(' ') << std::setw(8) << pending_count << RESET;
+    std::cout << "                                      ";
+    std::cout << CYAN << " │" << RESET << std::endl;
+    
+    std::cout << CYAN << "│" << RESET;
+    std::cout << " Total Processed: " << GREEN << BOLD << std::setfill(' ') << std::setw(8) << total_processed << RESET;
+    std::cout << "                                    ";
+    std::cout << CYAN << " │" << RESET << std::endl;
+    
+    std::cout << CYAN << "└" << std::setfill('-') << std::setw(78) << "-┘" << RESET << std::endl;
+    std::cout << std::endl;
+    
+    // Worker details table
+    std::cout << CYAN << BOLD << "┌─ WORKER PROCESSES " << std::setfill('-') << std::setw(59) << "-┐" << RESET << std::endl;
+    std::cout << CYAN << "│" << RESET << BOLD << " ID │   PID   │  STATUS  │ TASKS │ UPTIME │ ACTIVITY        │" << RESET << CYAN << " │" << RESET << std::endl;
+    std::cout << CYAN << "├" << std::setfill('-') << std::setw(4) << "-┼" << std::setw(9) << "-┼" << std::setw(10) << "-┼" 
+              << std::setw(7) << "-┼" << std::setw(8) << "-┼" << std::setw(17) << "-┤" << RESET << std::endl;
+    
+    // Display worker information
+    for (int i = 0; i < MAX_WORKERS; ++i) {
+        std::cout << CYAN << "│" << RESET;
+        
+        if (workers[i] && is_worker_deployed(i)) {
+            // Worker ID
+            std::cout << " " << BLUE << BOLD << std::setfill(' ') << std::setw(2) << i << RESET << " │";
+            
+            // PID
+            std::cout << " " << WHITE << std::setfill(' ') << std::setw(7) << workers[i]->pid << RESET << " │";
+            
+            // Status with color
+            bool is_processing = workers[i]->is_active.load();
+            if (is_processing) {
+                std::cout << " " << BG_GREEN << WHITE << " ACTIVE " << RESET << "  │";
+            } else {
+                std::cout << " " << YELLOW << " IDLE  " << RESET << "  │";
+            }
+            
+            // Tasks processed
+            std::cout << " " << GREEN << std::setfill(' ') << std::setw(5) << workers[i]->tasks_processed.load() << RESET << " │";
+            
+            // Uptime calculation
+            auto uptime = std::chrono::steady_clock::now() - workers[i]->last_activity;
+            auto uptime_seconds = std::chrono::duration_cast<std::chrono::seconds>(uptime).count();
+            std::cout << " " << WHITE << std::setfill(' ') << std::setw(6);
+            if (uptime_seconds < 60) {
+                std::cout << uptime_seconds << "s" << RESET << " │";
+            } else if (uptime_seconds < 3600) {
+                std::cout << uptime_seconds/60 << "m" << RESET << " │";
+            } else {
+                std::cout << uptime_seconds/3600 << "h" << RESET << " │";
+            }
+            
+            // Activity indicator with animation
+            std::cout << " ";
+            if (is_processing) {
+                // Animated processing indicator
+                static int anim_frame = 0;
+                const char* frames[] = {"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"};
+                std::cout << GREEN << frames[anim_frame % 10] << " Processing..." << RESET;
+                anim_frame++;
+            } else {
+                std::cout << BLUE << "● Waiting      " << RESET;
+            }
+            std::cout << " │" << CYAN << " │" << RESET << std::endl;
+        } else {
+            // Empty worker slot
+            std::cout << " " << std::setfill(' ') << std::setw(2) << i << " │";
+            std::cout << " " << RED << "   ---   " << RESET << " │";
+            std::cout << " " << RED << " OFFLINE " << RESET << " │";
+            std::cout << " " << RED << "  --- " << RESET << " │";
+            std::cout << " " << RED << "  --- " << RESET << " │";
+            std::cout << " " << RED << "● Not started   " << RESET << " │" << CYAN << " │" << RESET << std::endl;
+        }
+    }
+    
+    std::cout << CYAN << "└" << std::setfill('-') << std::setw(78) << "-┘" << RESET << std::endl;
+    
+    // Performance metrics
+    std::cout << std::endl;
+    std::cout << CYAN << BOLD << "┌─ PERFORMANCE METRICS " << std::setfill('-') << std::setw(56) << "-┐" << RESET << std::endl;
+    std::cout << CYAN << "│" << RESET;
+    
+    // Calculate average tasks per worker
+    double avg_tasks = 0.0;
+    int active_workers_with_tasks = 0;
+    for (int i = 0; i < MAX_WORKERS; ++i) {
+        if (workers[i] && is_worker_deployed(i)) {
+            int tasks = workers[i]->tasks_processed.load();
+            if (tasks > 0) {
+                avg_tasks += tasks;
+                active_workers_with_tasks++;
+            }
+        }
+    }
+    if (active_workers_with_tasks > 0) {
+        avg_tasks /= active_workers_with_tasks;
+    }
+    
+    std::cout << " Avg Tasks/Worker: " << GREEN << std::fixed << std::setprecision(1) << avg_tasks << RESET;
+    std::cout << "   Queue Load: ";
+    if (pending_count == 0) {
+        std::cout << GREEN << "LOW" << RESET;
+    } else if (pending_count < 5) {
+        std::cout << YELLOW << "MEDIUM" << RESET;
+    } else {
+        std::cout << RED << "HIGH" << RESET;
+    }
+    std::cout << "        ";
+    std::cout << CYAN << " │" << RESET << std::endl;
+    std::cout << CYAN << "└" << std::setfill('-') << std::setw(78) << "-┘" << RESET << std::endl;
+    
+    // Footer
+    std::cout << std::endl;
+    std::cout << WHITE << "Press " << CYAN << "Ctrl+C" << WHITE << " to stop monitoring" << RESET << std::endl;
+    std::cout << std::endl;
+    
+    // Scroll to bottom
+    std::cout << std::flush;
+    
 }
 
+
 // Private helper methods
-bool WorkerManager::is_worker_active(int worker_index) const {
+bool WorkerManager::is_worker_deployed(int worker_index) const {
     return worker_index >= 0 && worker_index < MAX_WORKERS && 
            workers[worker_index] && workers[worker_index]->pid > 0;
 }
@@ -326,7 +492,7 @@ bool WorkerManager::should_scale_down() const {
 int WorkerManager::count_idle_workers() const {
     int idle_count = 0;
     for (int i = 0; i < MAX_WORKERS; ++i) {
-        if (workers[i] && is_worker_active(i) && !workers[i]->is_active.load()) {
+        if (workers[i] && is_worker_deployed(i) && !workers[i]->is_active.load()) {
             idle_count++;
         }
     }
