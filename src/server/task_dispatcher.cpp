@@ -75,7 +75,7 @@ bool TaskDispatcher::initialize() {
 
 
 
-void TaskDispatcher::process_message(std::function<void(const std::string&)> chunk_callback, const std::string& message, int max_tokens) {  
+void TaskDispatcher::process_message(std::function<bool(const std::string&)> chunk_callback, const std::string& message, int max_tokens) {  
     // Get next available worker in a round-robin fashion
     int assigned_worker = worker_manager->assign_task_to_worker();
     if (assigned_worker == -1) {
@@ -99,18 +99,30 @@ void TaskDispatcher::process_message(std::function<void(const std::string&)> chu
 
     // Wait for response from the assigned worker
     bool is_last = false;
+    bool client_disconnected = false;
     while(!is_last) {
         std::string chunk_data;
         bool success = ipc_manager->wait_for_response_chunk(assigned_worker, task_id, chunk_data, is_last);
         
         if (!success) {
-            chunk_callback("{\"error\": \"Failed to receive response from worker\"}");
+            if (!client_disconnected) { // Only send error if client was still connected
+                chunk_callback("{\"error\": \"Failed to receive response from worker\"}");
+            }
             break;
         }
+
+        if(client_disconnected) {
+            continue; // Client is gone, just drain the queue until the worker is done
+        }
+
         std::string escaped_chunk_json_data = build_json_response_chunk(chunk_data, is_last);
 
         DEBUG_COUT("Received chunk for task " << task_id << " from worker " << assigned_worker << " (chunk: \"" << escaped_chunk_json_data << "\")");
-        chunk_callback(escaped_chunk_json_data);
+        if (!chunk_callback(escaped_chunk_json_data)) {
+            client_disconnected = true;
+            DEBUG_COUT("Client disconnected, draining remaining chunks for task " << task_id);
+            // We will now continue the loop to drain remaining chunks from the worker
+        }
     }
     
     // Notify worker manager about request completion

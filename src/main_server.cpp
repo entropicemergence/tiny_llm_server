@@ -26,8 +26,10 @@
 
 #ifdef DEBUG_PRINT
 #define DEBUG_COUT(x) std::cout << x << std::endl
+#define DEBUG_CERR(x) std::cerr << x << std::endl
 #else
 #define DEBUG_COUT(x)
+#define DEBUG_CERR(x)
 #endif
 
 
@@ -37,6 +39,8 @@ void ctrl_c_signal_handler(int signal) {
 }
 
 // Add section to setup global environment, containing model, worker binary path, and other dynamic variables. must adapt to where the base path where the program is called from
+// There is bug in wsl where the client cant connect at all with the server, solved by restarting wsl. 
+// currently when the client close connection abruptly the worker beceome stuck and unable to proccess subsequent requests
 
 class HttpInferenceServer {
 private:
@@ -70,13 +74,13 @@ public:
         serverAddr.sin_port = htons(port);         // Convert port to network byte order (big endian)
 
         if (bind(serverSocket, (sockaddr*)&serverAddr, sizeof(serverAddr)) == SOCKET_ERROR) {    // Bind socket to port
-            std::cerr << "Bind failed on port " << port << std::endl;
+            DEBUG_CERR("Bind failed on port " << port);
             perror("bind failed");
             return false;
         }
 
-        if (listen(serverSocket, 10) == SOCKET_ERROR) {                                         // Listen for connections with a queue of 10
-            std::cerr << "Listen failed" << std::endl;
+        if (listen(serverSocket, SOMAXCONN) == SOCKET_ERROR) {                                         // Listen for connections with a queue of #define SOMAXCONN	4096. It means burst of request larger than this will overwhelms os.
+            DEBUG_CERR("Listen failed");
             return false;
         }
 
@@ -103,23 +107,30 @@ public:
             if (HttpUtils::parseJsonMessage(request.body, request_parsed)) {
                 std::string header = HttpUtils::buildHttpChunkedResponseHeader(200, "OK");
                 if(send(clientSocket, header.c_str(), header.length(), 0) == SOCKET_ERROR) {
-                    std::cerr << "Failed to send header" << std::endl;
+                    DEBUG_CERR("Failed to send header");
                 }
 
 
-                auto chunk_callback = [clientSocket](const std::string& chunk_data) {
+                std::atomic<bool> client_connected(true);
+                auto chunk_callback = [clientSocket, &client_connected](const std::string& chunk_data) -> bool {
+                    if (!client_connected) return false; // Stop if already disconnected
                     std::string chunk = HttpUtils::buildHttpChunk(chunk_data);
                     if(send(clientSocket, chunk.c_str(), chunk.length(), 0) == SOCKET_ERROR) {
-                        std::cerr << "Failed to send chunk" << std::endl;
+                        DEBUG_CERR("Failed to send chunk");
+                        client_connected.store(false);
+                        return false;
                     }
+                    return true;
                 };
 
                 task_dispatcher->process_message(chunk_callback, request_parsed.message, request_parsed.max_tokens);
 
                 // Send final zero-length chunk
-                std::string final_chunk = "0\r\n\r\n";
-                if(send(clientSocket, final_chunk.c_str(), final_chunk.length(), 0) == SOCKET_ERROR) {
-                    std::cerr << "Failed to send final chunk" << std::endl;
+                if (client_connected) {
+                    std::string final_chunk = "0\r\n\r\n";
+                    if(send(clientSocket, final_chunk.c_str(), final_chunk.length(), 0) == SOCKET_ERROR) {
+                        DEBUG_CERR("Failed to send final chunk");
+                    }
                 }
                 closesocket(clientSocket);
 
@@ -196,6 +207,7 @@ public:
 
 int main() {
     signal(SIGINT, ctrl_c_signal_handler);   // SIGINT is the signal for ctrl+c
+    signal(SIGPIPE, SIG_IGN);                // Ignore SIGPIPE to prevent crashes on broken client connections
     std::cout << "Starting Mock Inference Server..." << std::endl;
     // Minimal Oatpp usage - just for environment initialization
     // oatpp::base::Environment::init();
@@ -205,7 +217,7 @@ int main() {
         server.run();
         
     } catch (const std::exception& e) {
-        std::cerr << "Server error: " << e.what() << std::endl;
+        DEBUG_CERR("Server error: " << e.what());
     }
     // oatpp::base::Environment::destroy();
     return 0;
@@ -214,3 +226,5 @@ int main() {
 
 // sudo lsof -i :8080
 // kill 202232 202281 kill previous proccess if one mistakenly press ctrl+c twice
+// killall -9 -u $USER worker
+// ps -u $USER

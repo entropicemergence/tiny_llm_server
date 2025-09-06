@@ -6,7 +6,7 @@ import threading
 import random
 import argparse
 
-NUM_THREADS = 10
+NUM_THREADS =2
 MAX_REQUESTS = 300
 
 print_lock = threading.Lock()
@@ -67,7 +67,7 @@ def test_process(message, thread_id, request_id):
 
 def worker_thread(thread_id, num_requests_per_thread):
     """Worker function that each thread will execute"""
-
+    time.sleep(0.05 * thread_id)
     for i in range(num_requests_per_thread):
         prompt = list_of_of_prompt[random.randint(0, len(list_of_of_prompt)-1)]
         # for j in range(10):

@@ -57,7 +57,7 @@ private:
 
     // Scaling constants
     const int SCALE_UP_THRESHOLD = 2; // This is now unused for scaling up, but kept for context or future use
-    const int SCALE_DOWN_THRESHOLD = 0;
+    const int SCALE_DOWN_THRESHOLD = 1;
     const std::chrono::seconds SCALE_CHECK_INTERVAL{2};
     const std::chrono::seconds WORKER_IDLE_TIMEOUT{10};
 

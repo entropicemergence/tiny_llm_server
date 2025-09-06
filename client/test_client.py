@@ -7,7 +7,10 @@ import random
 import argparse
 import queue
 
-NUM_THREADS = 10
+
+
+# it seems python thread is limited to max ~ 12, need to write dedicated c client for better benchmarking
+NUM_THREADS = 12
 MAX_REQUESTS = 300
 
 print_lock = threading.Lock()
@@ -119,7 +122,7 @@ def test_process(message, thread_id, request_id):
 
 def worker_thread(thread_id, num_requests_per_thread):
     """Worker function that each thread will execute"""
-
+    time.sleep(0.01 * thread_id)
     for i in range(num_requests_per_thread):
         prompt = list_of_of_prompt[random.randint(0, len(list_of_of_prompt)-1)]
         loading_text = f"T {thread_id} | {i}: testing with message '{prompt}'"

@@ -247,7 +247,7 @@ void WorkerManager::check_and_scale() {
     DEBUG_COUT("Scaling check: " << current_workers << " workers, " << current_pending << " pending requests");
 
     // Scale down if needed
-    if (should_scale_down() && current_workers > min_workers.load()) {
+    if (should_scale_down()) {
         // Find an idle worker to terminate
         auto now_idle = std::chrono::steady_clock::now();
         for (int i = MAX_WORKERS - 1; i >= 0; --i) {  // Start from highest index
@@ -310,7 +310,6 @@ bool WorkerManager::should_scale_down() const {
     
     // Scale down if we have very few pending requests and more than minimum workers
     return current_pending < SCALE_DOWN_THRESHOLD && 
-           current_workers > min_workers.load() &&
            count_idle_workers() > 1;  // Keep at least one worker busy
 }
 
