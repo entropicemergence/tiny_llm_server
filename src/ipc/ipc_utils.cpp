@@ -20,6 +20,7 @@ IPCManager::IPCManager(bool server, int worker_idx)
         sem_request_items[i] = nullptr;
         sem_req_space[i] = nullptr;
         sem_resp[i] = nullptr;
+        sem_resp_consumed[i] = nullptr;
     }
 }
 
@@ -49,6 +50,14 @@ IPCManager::~IPCManager() {
                 sem_unlink(ss.str().c_str());
             }
         }
+        if (sem_resp_consumed[i] != nullptr && sem_resp_consumed[i] != SEM_FAILED) {
+            sem_close(sem_resp_consumed[i]);
+            if (is_server) {
+                std::ostringstream ss;
+                ss << SEM_RESP_CONSUMED_PREFIX << i;
+                sem_unlink(ss.str().c_str());
+            }
+        }
     }
     
     if (shared_mem_ptr != nullptr && shared_mem_ptr != MAP_FAILED) {
@@ -69,13 +78,15 @@ bool IPCManager::initialize() {
     if (is_server) {
         shm_unlink(SHM_NAME); // Unlink shared memory
         for (int i = 0; i < MAX_WORKERS; ++i) {
-            std::ostringstream sem_req_items_name, sem_req_space_name, sem_resp_name;
+            std::ostringstream sem_req_items_name, sem_req_space_name, sem_resp_name, sem_resp_consumed_name;
             sem_req_items_name << SEM_REQ_ITEMS_PREFIX << i;
             sem_req_space_name << SEM_REQ_SPACE_PREFIX << i;
             sem_resp_name << SEM_RESP_PREFIX << i;
+            sem_resp_consumed_name << SEM_RESP_CONSUMED_PREFIX << i;
             sem_unlink(sem_req_items_name.str().c_str());
             sem_unlink(sem_req_space_name.str().c_str());
             sem_unlink(sem_resp_name.str().c_str());
+            sem_unlink(sem_resp_consumed_name.str().c_str());
         }
     }
 
@@ -111,22 +122,25 @@ bool IPCManager::initialize() {
     
     // Open semaphores
     for (int i = 0; i < MAX_WORKERS; ++i) {
-        std::ostringstream sem_req_items_name, sem_req_space_name, sem_resp_name;
+        std::ostringstream sem_req_items_name, sem_req_space_name, sem_resp_name, sem_resp_consumed_name;
         sem_req_items_name << SEM_REQ_ITEMS_PREFIX << i;
         sem_req_space_name << SEM_REQ_SPACE_PREFIX << i;
         sem_resp_name << SEM_RESP_PREFIX << i;
+        sem_resp_consumed_name << SEM_RESP_CONSUMED_PREFIX << i;
 
         if (is_server) {
             sem_request_items[i] = sem_open(sem_req_items_name.str().c_str(), O_CREAT, 0666, 0);
             sem_req_space[i] = sem_open(sem_req_space_name.str().c_str(), O_CREAT, 0666, RING_CAP_PER_WORKER);
             sem_resp[i] = sem_open(sem_resp_name.str().c_str(), O_CREAT, 0666, 0);
+            sem_resp_consumed[i] = sem_open(sem_resp_consumed_name.str().c_str(), O_CREAT, 0666, 1);
         } else {
             sem_request_items[i] = sem_open(sem_req_items_name.str().c_str(), 0);
             sem_req_space[i] = sem_open(sem_req_space_name.str().c_str(), 0);
             sem_resp[i] = sem_open(sem_resp_name.str().c_str(), 0);
+            sem_resp_consumed[i] = sem_open(sem_resp_consumed_name.str().c_str(), 0);
         }
 
-        if (sem_request_items[i] == SEM_FAILED || sem_req_space[i] == SEM_FAILED || sem_resp[i] == SEM_FAILED) {
+        if (sem_request_items[i] == SEM_FAILED || sem_req_space[i] == SEM_FAILED || sem_resp[i] == SEM_FAILED || sem_resp_consumed[i] == SEM_FAILED) {
             std::cerr << "Failed to open semaphore for worker " << i << ": " << strerror(errno) << std::endl;
             return false;
         }
@@ -167,7 +181,7 @@ bool IPCManager::enqueue_request(int worker_idx, const std::string& message, uin
     return true;
 }
 
-bool IPCManager::wait_for_response(int worker_idx, uint64_t task_id, std::string& result) {
+bool IPCManager::wait_for_response_chunk(int worker_idx, uint64_t task_id, std::string& chunk, bool& is_last) {
     if (!shared_mem_ptr || worker_idx < 0 || worker_idx >= MAX_WORKERS) return false;
     
     if (sem_wait(sem_resp[worker_idx]) == -1) {
@@ -177,18 +191,18 @@ bool IPCManager::wait_for_response(int worker_idx, uint64_t task_id, std::string
     
     RespSlot& slot = shared_mem_ptr->resp_slots[worker_idx];
     
-    // Load the task_id from shared memory once to ensure consistency
     uint64_t received_task_id = slot.task_id.load();
     
     if (received_task_id != task_id) {
         std::cerr << "Task ID mismatch: expected " << task_id << ", got " << received_task_id << std::endl;
-        // This can happen if a previous request timed out but the worker still processed it.
-        // For robust implementation, a more complex handling mechanism is needed.
-        // For this project, we'll treat it as a fatal error for the request.
+        sem_post(sem_resp_consumed[worker_idx]); // Release the lock
         return false;
     }
     
-    result.assign(slot.data, slot.len);
+    chunk.assign(slot.data, slot.len);
+    is_last = slot.is_last_piece;
+    
+    sem_post(sem_resp_consumed[worker_idx]);
     
     return true;
 }
@@ -221,24 +235,35 @@ bool IPCManager::dequeue_request(int worker_idx, ReqSlot& slot) {
     return true;
 }
 
-bool IPCManager::send_response(int worker_idx, uint64_t task_id, const std::string& result) {
-    // if (!shared_mem_ptr || worker_idx < 0 || worker_idx >= MAX_WORKERS) return false;    
-    // if (result.length() >= CHUNK_SIZE) {
-    //     std::cerr << "Result too large: " << result.length() << " >= " << CHUNK_SIZE << std::endl;
-    //     return false;
-    // }
+bool IPCManager::send_response_chunk(int worker_idx, uint64_t task_id, const std::string& chunk, bool is_last) {
+    if (!shared_mem_ptr || worker_idx < 0 || worker_idx >= MAX_WORKERS) return false;    
+    if (chunk.length() >= CHUNK_SIZE) {
+        std::cerr << "Result chunk too large: " << chunk.length() << " >= " << CHUNK_SIZE << std::endl;
+        return false;
+    }
+
+    if (sem_wait(sem_resp_consumed[worker_idx]) == -1) {
+        std::cerr << "Failed to wait for response consumption signal from worker " << worker_idx << ": " << strerror(errno) << std::endl;
+        return false;
+    }
+
     RespSlot& slot = shared_mem_ptr->resp_slots[worker_idx];
     slot.task_id.store(task_id);
-    slot.len = static_cast<uint32_t>(result.length());
-    std::memcpy(slot.data, result.c_str(), result.length());
-    slot.data[result.length()] = '\0';
+    slot.len = static_cast<uint32_t>(chunk.length());
+    slot.is_last_piece = is_last;
+    std::memcpy(slot.data, chunk.c_str(), chunk.length());
+    slot.data[chunk.length()] = '\0';
     
     sem_post(sem_resp[worker_idx]);
     
-    sem_post(sem_req_space[worker_idx]);
-    
     return true;
 }
+
+void IPCManager::signal_request_handled(int worker_idx) {
+    if (worker_idx < 0 || worker_idx >= MAX_WORKERS) return;
+    sem_post(sem_req_space[worker_idx]);
+}
+
 
 bool IPCManager::is_shutdown_requested() const {
     return shared_mem_ptr && shared_mem_ptr->shutdown_flag.load();

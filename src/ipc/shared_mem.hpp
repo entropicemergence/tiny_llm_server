@@ -16,6 +16,7 @@ constexpr const char* SHM_NAME = "/inference_shm";
 constexpr const char* SEM_REQ_ITEMS_PREFIX = "/sem_req_items_";
 constexpr const char* SEM_REQ_SPACE_PREFIX = "/sem_req_space_";
 constexpr const char* SEM_RESP_PREFIX = "/sem_resp_";    // Response semaphores (per worker)
+constexpr const char* SEM_RESP_CONSUMED_PREFIX = "/sem_resp_consumed_"; // Semaphore for consumed responses chunks
 
 // Request slot structure,
 struct ReqSlot {

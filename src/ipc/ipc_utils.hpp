@@ -2,7 +2,6 @@
 
 #include "shared_mem.hpp"
 #include <string>
-#include <memory>
 
 #ifdef _WIN32
     // Windows implementation would use named pipes/memory mapped files
@@ -26,6 +25,7 @@ private:
     sem_t* sem_request_items[MAX_WORKERS]; // Counts tasks in the queue. Acting as the counter for the number of requests in the queue. decrement by worker, increment by server.
     sem_t* sem_req_space[MAX_WORKERS]; // Counts empty slots in the queue.
     sem_t* sem_resp[MAX_WORKERS];      // Counts responses from the worker.
+    sem_t* sem_resp_consumed[MAX_WORKERS]; // Counts consumed response chunks.
     
     bool is_server;
     int worker_index; // Only used by worker
@@ -41,15 +41,18 @@ public:
     // Enqueue a request for a specific worker
     bool enqueue_request(int worker_idx, const std::string& message, uint64_t& task_id);
     
-    // Wait for a response from a specific worker
-    bool wait_for_response(int worker_idx, uint64_t task_id, std::string& result);
+    // Wait for a response chunk from a specific worker
+    bool wait_for_response_chunk(int worker_idx, uint64_t task_id, std::string& chunk, bool& is_last);
     
     // Worker operations
     // Dequeue a request for this worker
     bool dequeue_request(int worker_idx, ReqSlot& slot);
     
-    // Send a response from this worker
-    bool send_response(int worker_idx, uint64_t task_id, const std::string& result);
+    // Send a response chunk from this worker
+    bool send_response_chunk(int worker_idx, uint64_t task_id, const std::string& chunk, bool is_last);
+
+    // Signal that the worker has finished handling a request
+    void signal_request_handled(int worker_idx);
     
     // Utility functions
     bool is_shutdown_requested() const;

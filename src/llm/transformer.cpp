@@ -9,7 +9,7 @@
 #include <limits>
 #include <iomanip>
 
-// Define DEBUG_PRINT to enable/disable all debug printing .Comment out the line below to disable all debug prints
+// Define DEBUG_PRINT to enable/disable all debug printing
 // #define DEBUG_PRINT
 
 #ifdef DEBUG_PRINT
@@ -21,7 +21,6 @@
 #endif
 
 #include "transformer.hpp"
-
 
 
 
@@ -188,7 +187,7 @@ void LayerNorm::forward(const Tensor& input, Tensor& output) {
         std::cerr << "LayerNorm input shape mismatch" << std::endl;
         return;
     }
-    DEBUG_COUT("LayerNorm Forward shape:"<<std::endl);
+    DEBUG_COUT("LayerNorm Forward:"<<std::endl);
     int seq = input.shape[0];
     int embd = input.shape[1];
     output.shape = input.shape;

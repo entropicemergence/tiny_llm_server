@@ -3,6 +3,8 @@
 #include <chrono>
 #include <thread>
 #include <functional>
+#include <sstream>
+#include <iomanip>
 
 
 #define DEBUG_PRINT
@@ -15,16 +17,30 @@
 #endif
 
 
-std::string build_valid_json_response(const std::string& result) {  // Format as JSON response, Escape quotes in the result for proper JSON
-    std::string escaped_result = result;
-    size_t pos = 0;
-    while ((pos = escaped_result.find("\"", pos)) != std::string::npos) {
-        escaped_result.replace(pos, 1, "\\\"");
-            pos += 2;
+std::string build_json_response_chunk(const std::string &s, bool is_last) {
+    std::ostringstream o;
+    for (auto c = s.cbegin(); c != s.cend(); c++) {
+        switch (*c) {
+            case '"': o << "\\\""; break;
+            case '\\': o << "\\\\"; break;
+            case '\b': o << "\\b"; break;
+            case '\f': o << "\\f"; break;
+            case '\n': o << "\\n"; break;
+            case '\r': o << "\\r"; break;
+            case '\t': o << "\\t"; break;
+            default:
+                if ('\x00' <= *c && *c <= '\x1f') {
+                    o << "\\u"
+                      << std::hex << std::setw(4) << std::setfill('0') << (int)*c;
+                } else {
+                    o << *c;
+                }
+        }
     }
-    return "{\"result\": \"" + escaped_result + "\"}";
+    std::stringstream json_chunk;
+    json_chunk << "{\"chunk\": \"" << o.str() << "\", \"is_last\": " << (is_last ? "true" : "false") << "}";
+    return json_chunk.str();
 }
-
 
 TaskDispatcher::TaskDispatcher() : should_stop_monitoring(false) {
     ipc_manager = std::make_unique<IPCManager>(true);  // true = server mode
@@ -82,29 +98,23 @@ void TaskDispatcher::process_message(std::function<void(const std::string&)> chu
     DEBUG_COUT("Dispatched task " << task_id << " to worker " << assigned_worker << " (message: \"" << message << "\")");
 
     // Wait for response from the assigned worker
-    std::string result;
-    bool success = ipc_manager->wait_for_response(assigned_worker, task_id, result);
+    bool is_last = false;
+    while(!is_last) {
+        std::string chunk_data;
+        bool success = ipc_manager->wait_for_response_chunk(assigned_worker, task_id, chunk_data, is_last);
+        
+        if (!success) {
+            chunk_callback("{\"error\": \"Failed to receive response from worker\"}");
+            break;
+        }
+        std::string escaped_chunk_json_data = build_json_response_chunk(chunk_data, is_last);
+
+        DEBUG_COUT("Received chunk for task " << task_id << " from worker " << assigned_worker << " (chunk: \"" << escaped_chunk_json_data << "\")");
+        chunk_callback(escaped_chunk_json_data);
+    }
     
     // Notify worker manager about request completion
     worker_manager->on_request_complete(assigned_worker);
-    
-    if (!success) {
-        chunk_callback("{\"error\": \"Failed to receive response from worker\"}");
-        return;
-    }
-
-    DEBUG_COUT("Received response for task " << task_id << " from worker " << assigned_worker << " (result: \"" << result << "\")");
-    
-    std::string full_response = build_valid_json_response(result);
-
-    // Mock chunking
-    size_t chunk_size = 10;
-    for (size_t i = 0; i < full_response.length(); i += chunk_size) {
-        std::string chunk = full_response.substr(i, chunk_size);
-        std::cout << "Sending chunk: " << chunk << std::endl;
-        chunk_callback(chunk);
-        std::this_thread::sleep_for(std::chrono::milliseconds(500)); // simulate delay
-    }
 }
 
 

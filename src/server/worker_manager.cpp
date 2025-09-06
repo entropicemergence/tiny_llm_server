@@ -286,6 +286,52 @@ void WorkerManager::restart_unhealthy_workers() {
 }
 
 
+
+
+
+// Private helper methods
+bool WorkerManager::is_worker_deployed(int worker_index) const {
+    return worker_index >= 0 && worker_index < MAX_WORKERS && 
+           workers[worker_index] && workers[worker_index]->pid > 0;
+}
+
+void WorkerManager::update_worker_activity(int worker_index) {
+    if (worker_index >= 0 && worker_index < MAX_WORKERS && workers[worker_index]) {
+        workers[worker_index]->last_activity = std::chrono::steady_clock::now();
+    }
+}
+
+bool WorkerManager::should_scale_up() const {
+    int current_pending = pending_requests.load();
+    int current_workers = active_worker_count.load();
+    
+    // Scale up if we have too many pending requests relative to workers
+    return current_pending > SCALE_UP_THRESHOLD && 
+           current_workers < max_workers.load();
+}
+
+bool WorkerManager::should_scale_down() const {
+    int current_workers = active_worker_count.load();
+    int current_pending = pending_requests.load();
+    
+    // Scale down if we have very few pending requests and more than minimum workers
+    return current_pending < SCALE_DOWN_THRESHOLD && 
+           current_workers > min_workers.load() &&
+           count_idle_workers() > 1;  // Keep at least one worker busy
+}
+
+int WorkerManager::count_idle_workers() const {
+    int idle_count = 0;
+    for (int i = 0; i < MAX_WORKERS; ++i) {
+        if (workers[i] && is_worker_deployed(i) && !workers[i]->is_active.load()) {
+            idle_count++;
+        }
+    }
+    return idle_count;
+}
+
+
+
 void WorkerManager::print_stats() const {
     // ANSI color codes
     const std::string RESET = "\033[0m";
@@ -455,46 +501,4 @@ void WorkerManager::print_stats() const {
     // Scroll to bottom
     std::cout << std::flush;
     
-}
-
-
-// Private helper methods
-bool WorkerManager::is_worker_deployed(int worker_index) const {
-    return worker_index >= 0 && worker_index < MAX_WORKERS && 
-           workers[worker_index] && workers[worker_index]->pid > 0;
-}
-
-void WorkerManager::update_worker_activity(int worker_index) {
-    if (worker_index >= 0 && worker_index < MAX_WORKERS && workers[worker_index]) {
-        workers[worker_index]->last_activity = std::chrono::steady_clock::now();
-    }
-}
-
-bool WorkerManager::should_scale_up() const {
-    int current_pending = pending_requests.load();
-    int current_workers = active_worker_count.load();
-    
-    // Scale up if we have too many pending requests relative to workers
-    return current_pending > SCALE_UP_THRESHOLD && 
-           current_workers < max_workers.load();
-}
-
-bool WorkerManager::should_scale_down() const {
-    int current_workers = active_worker_count.load();
-    int current_pending = pending_requests.load();
-    
-    // Scale down if we have very few pending requests and more than minimum workers
-    return current_pending < SCALE_DOWN_THRESHOLD && 
-           current_workers > min_workers.load() &&
-           count_idle_workers() > 1;  // Keep at least one worker busy
-}
-
-int WorkerManager::count_idle_workers() const {
-    int idle_count = 0;
-    for (int i = 0; i < MAX_WORKERS; ++i) {
-        if (workers[i] && is_worker_deployed(i) && !workers[i]->is_active.load()) {
-            idle_count++;
-        }
-    }
-    return idle_count;
 }

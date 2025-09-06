@@ -69,8 +69,8 @@ bool HttpUtils::readAndParseHttpRequest(SOCKET clientSocket, HttpRequest& reques
             auto contentLengthIt = request.headers.find("Content-Length");
             if (contentLengthIt != request.headers.end()) {
                 contentLength = std::stoi(contentLengthIt->second);
-            } else {
-                return false; // Require Content-Length for now
+            } else if (request.method == "POST") {
+                return false; // Require Content-Length for POST requests
             }
 
             // Read body if we have it already in buffer

@@ -20,14 +20,15 @@ add_library(ipc_lib
 
 # Create tokenizer library
 add_library(inference_lib
-    src/neural_net/simple_tokenizer.cpp
-    src/neural_net/tensor.cpp
-    src/neural_net/transformer.cpp
+    src/llm/simple_tokenizer.cpp
+    src/llm/tensor.cpp
+    src/llm/transformer.cpp
+    src/llm/tiny_llm_inference.cpp
 )
 
 # Create worker processing library
 add_library(worker_lib
-    src/worker/worker_process.cpp
+    src/worker/simple_worker.cpp
 )
 
 # Create server dispatcher library
@@ -48,7 +49,7 @@ add_executable(worker
 )
 
 add_executable(tok
-    src/neural_net/simple_tokenizer.cpp
+    src/llm/simple_tokenizer.cpp
 )
 target_link_libraries(tok
     inference_lib
@@ -56,12 +57,12 @@ target_link_libraries(tok
 target_compile_definitions(tok PRIVATE TOKENIZER_DEBUG)
 
 add_executable(inference
-    src/neural_net/tiny_llm_inference.cpp
+    src/llm/tiny_llm_inference.cpp
 )
 target_link_libraries(inference
     inference_lib
 )
-target_compile_definitions(inference PRIVATE LLM_INFERENCE_DEBUG)
+target_compile_definitions(inference PRIVATE INFERENCE_LOOP)
 
 
 # Link libraries for server
@@ -75,6 +76,7 @@ target_link_libraries(server
 
 # Link libraries for worker
 target_link_libraries(worker
+    inference_lib
     worker_lib
     ipc_lib
     Threads::Threads

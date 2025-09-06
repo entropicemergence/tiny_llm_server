@@ -149,6 +149,10 @@ public:
                 send(clientSocket, response.c_str(), response.length(), 0);
                 closesocket(clientSocket);
             }
+        } else if (request.method == "GET" && request.path == "/ping") {
+            std::string response = HttpUtils::buildHttpResponse(200, "OK", "{\"status\": \"ok\"}");
+            send(clientSocket, response.c_str(), response.length(), 0);
+            closesocket(clientSocket);
         } else {
             std::string response = HttpUtils::buildHttpResponse(404, "Not Found", "{\"error\": \"Endpoint not found\"}");
             send(clientSocket, response.c_str(), response.length(), 0);
