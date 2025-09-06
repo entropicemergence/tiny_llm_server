@@ -29,6 +29,9 @@ void signal_handler(int signal) {
 
 void llm_process_and_send_chunked_response(IPCManager& ipc_manager, int worker_index, ReqSlot& request){
     std::string current_input(request.data, request.len);
+
+    ipc_manager.send_response_chunk(worker_index, request.task_id, current_input, false); // optional, send back the promt
+
     TinyLLM llm;
     llm.init(current_input);
     int max_tokens = 50;

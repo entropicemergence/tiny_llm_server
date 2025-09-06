@@ -5,12 +5,13 @@ import sys, time
 import threading
 import random
 import argparse
-import curses
+import queue
 
 NUM_THREADS = 10
 MAX_REQUESTS = 300
 
 print_lock = threading.Lock()
+display_queue = queue.Queue()
 
 
 list_of_of_prompt = ["Once upon a time", "They were", "Every day", "They like to", "One day,", "They want to be",
@@ -18,18 +19,62 @@ list_of_of_prompt = ["Once upon a time", "They were", "Every day", "They like to
 
 # list_of_of_prompt = ["Lily and Tom", "Lily and Tom","Lily and Tom"]
 
+def screen_manager(num_threads):
+    """Manages the terminal screen updates."""
+    thread_lines = {i: "" for i in range(1, num_threads + 1)}
+    sys.stdout.write("\033[2J\033[H")  # Clear screen
+    sys.stdout.flush()
+
+    # Initial header print
+    header = (
+        f"Testing C++ Server with {NUM_THREADS} threads\n"
+        f"Each thread will make {MAX_REQUESTS // NUM_THREADS} requests\n"
+        f"Total requests: {NUM_THREADS * (MAX_REQUESTS // NUM_THREADS)}\n"
+        f"{'-' * 30}\n"
+    )
+    sys.stdout.write(header)
+    sys.stdout.flush()
+    
+    header_line_count = header.count('\n')
+
+    while True:
+        try:
+            item = display_queue.get()
+            if item is None:  # Sentinel for stopping
+                break
+            
+            thread_id, content_type, data = item
+            
+            if content_type == "update":
+                thread_lines[thread_id] = data
+            elif content_type == "append":
+                thread_lines[thread_id] += data
+            elif content_type == "final":
+                thread_lines[thread_id] = data
+            
+            # Redraw screen
+            for tid, line in thread_lines.items():
+                sys.stdout.write(f"\033[{tid + header_line_count};1H\033[K{line}")
+            sys.stdout.flush()
+
+        except Exception:
+            # Handle exceptions to prevent the screen manager from crashing
+            break
+    
+    # Final cursor position
+    sys.stdout.write(f"\033[{num_threads + header_line_count + 1};1H")
+    sys.stdout.flush()
+
 def test_ping():
     try:
         url = "http://127.0.0.1:8080/ping"
         response = requests.get(url, timeout=5)
         response.raise_for_status()
-        # This will be printed before curses takes over the screen
         print(f"Ping successful: {response.json()}")
     except requests.exceptions.RequestException as e:
         print(f"Ping failed: {e}")
 
-def test_process(stdscr, message, thread_id, request_id, line_num):
-    full_response = ""
+def test_process(message, thread_id, request_id):
     try:
         url = "http://127.0.0.1:8080/process"
         headers = {"Content-Type": "application/json"}
@@ -38,113 +83,74 @@ def test_process(stdscr, message, thread_id, request_id, line_num):
         start_time = time.time()
         
         with requests.post(url, headers=headers, json=payload, stream=True, timeout=10) as response:
-            response.raise_for_status()  # Raise an exception for bad status codes
+            response.raise_for_status()
             
+            full_response = ""
+            base_text = f"T {thread_id} | {request_id}: "
+            display_queue.put((thread_id, "update", base_text))
+
             buffer = ""
             decoder = json.JSONDecoder()
-            for chunk in response.iter_content(chunk_size=None): # Process chunks as they arrive
+            for chunk in response.iter_content(chunk_size=None):
                 if chunk:
                     buffer += chunk.decode('utf-8', errors='ignore')
                     while buffer:
                         try:
                             result, index = decoder.raw_decode(buffer)
                             chunk_text = result.get('chunk', '')
-                            full_response += chunk_text
+                            if chunk_text:
+                                full_response += chunk_text
+                                display_queue.put((thread_id, "update", base_text + full_response))
+
                             buffer = buffer[index:]
-
-                            with print_lock:
-                                display_message = f"T {thread_id} | {request_id}: Result: {full_response}"
-                                # Truncate message if it's too long for the screen
-                                _, max_x = stdscr.getmaxyx()
-                                if len(display_message) >= max_x:
-                                    display_message = display_message[:max_x-1]
-                                
-                                stdscr.move(line_num, 0)
-                                stdscr.clrtoeol()
-                                stdscr.addstr(line_num, 0, display_message)
-                                stdscr.refresh()
-
                         except json.JSONDecodeError:
-                            # Not a full JSON object yet
                             break
 
         latency = time.time() - start_time
-        
-        with print_lock:
-            final_message = f"T {thread_id} | {request_id}: Result: {full_response} | Latency: {latency*1000:.2f} ms"
-            _, max_x = stdscr.getmaxyx()
-            if len(final_message) >= max_x:
-                final_message = final_message[:max_x-1]
-            stdscr.move(line_num, 0)
-            stdscr.clrtoeol()
-            stdscr.addstr(line_num, 0, final_message)
-            stdscr.refresh()
+        final_text = f"T {thread_id} | {request_id}: Latency: {latency*1000:.2f} ms: Result: {full_response}"
+        display_queue.put((thread_id, "final", final_text))
 
     except requests.exceptions.RequestException as e:
-        with print_lock:
-            error_message = f"T {thread_id} | {request_id}: Process failed: {e}"
-            stdscr.move(line_num, 0)
-            stdscr.clrtoeol()
-            stdscr.addstr(line_num, 0, error_message)
-            stdscr.refresh()
+        error_text = f"T {thread_id} | {request_id}: Process failed: {e}"
+        display_queue.put((thread_id, "final", error_text))
     except Exception as e:
-        with print_lock:
-            error_message = f"T {thread_id} | {request_id}: An unexpected error occurred: {e}"
-            stdscr.move(line_num, 0)
-            stdscr.clrtoeol()
-            stdscr.addstr(line_num, 0, error_message)
-            stdscr.refresh()
+        error_text = f"T {thread_id} | {request_id}: An unexpected error occurred: {e}"
+        display_queue.put((thread_id, "final", error_text))
 
-def worker_thread(stdscr, thread_id, num_requests_per_thread, line_num):
+def worker_thread(thread_id, num_requests_per_thread):
     """Worker function that each thread will execute"""
 
     for i in range(num_requests_per_thread):
         prompt = list_of_of_prompt[random.randint(0, len(list_of_of_prompt)-1)]
-        # for j in range(10):
-        #     prompt += list_of_of_prompt[random.randint(0, len(list_of_of_prompt)-1)]
-        with print_lock:
-            message = f"T {thread_id} | {i}: testing with message '{prompt}'"
-            stdscr.move(line_num, 0)
-            stdscr.clrtoeol()
-            stdscr.addstr(line_num, 0, message)
-            stdscr.refresh()
-        test_process(stdscr, prompt, thread_id, i, line_num)
-        # test_completion(prompt, thread_id, i)
-
-def run_threaded_tests(stdscr):
-    stdscr.clear()
-    
-    num_requests_per_thread = MAX_REQUESTS // NUM_THREADS
-    
-    stdscr.addstr(0, 0, f"Testing C++ Server with {NUM_THREADS} threads")
-    stdscr.addstr(1, 0, f"Each thread will make {num_requests_per_thread} requests")
-    stdscr.addstr(2, 0, f"Total requests: {NUM_THREADS * num_requests_per_thread}")
-    stdscr.refresh()
-
-    threads = []
-    for i in range(NUM_THREADS):
-        line_num = 4 + i
-        thread = threading.Thread(target=worker_thread, args=(stdscr, i + 1, num_requests_per_thread, line_num))
-        threads.append(thread)
-        thread.start()
-
-    for thread in threads:
-        thread.join()
-
-    stdscr.addstr(4 + NUM_THREADS + 2, 0, "All threads completed! Press any key to exit.")
-    stdscr.getch()
+        loading_text = f"T {thread_id} | {i}: testing with message '{prompt}'"
+        display_queue.put((thread_id, "update", loading_text))
+        test_process(prompt, thread_id, i)
 
 def main():
     test_ping()
     parser = argparse.ArgumentParser(description="Run concurrent requests to the server.")
-    # Get number of requests per thread, default to 250 (1000 total)
     num_requests_per_thread = MAX_REQUESTS // NUM_THREADS
 
-    print(f"Testing C++ Server with {NUM_THREADS} threads")
-    print(f"Each thread will make {num_requests_per_thread} requests")
-    print(f"Total requests: {NUM_THREADS * num_requests_per_thread}")
+    # Start the screen manager
+    screen_manager_thread = threading.Thread(target=screen_manager, args=(NUM_THREADS,))
+    screen_manager_thread.start()
+
+    # Create and start worker threads
+    threads = []
+    for i in range(NUM_THREADS):
+        thread = threading.Thread(target=worker_thread, args=(i + 1, num_requests_per_thread))
+        threads.append(thread)
+        thread.start()
+
+    # Wait for all worker threads to complete
+    for thread in threads:
+        thread.join()
+
+    # Stop the screen manager
+    display_queue.put(None)
+    screen_manager_thread.join()
     
-    curses.wrapper(run_threaded_tests)
+    print("All threads completed!")
 
 if __name__ == "__main__":
     main()
