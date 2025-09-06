@@ -2,6 +2,7 @@
 
 #include "shared_mem.hpp"
 #include <string>
+#include <functional>
 
 #include <semaphore.h>
 #include <sys/mman.h>
@@ -36,7 +37,7 @@ public:
     bool enqueue_request(int worker_idx, const std::string& message, uint64_t& task_id);
     
     // Wait for a response chunk from a specific worker
-    bool wait_for_response_chunk(int worker_idx, uint64_t task_id, std::string& chunk, bool& is_last);
+    bool wait_for_response_chunk(int worker_idx, uint64_t task_id, std::string& chunk, bool& is_last, const std::function<bool(const std::string&)>& on_timeout_callback, bool& client_disconnected);
     
     // Get the current size of a worker's request queue
     bool get_request_queue_size(int worker_idx, int& size) const;

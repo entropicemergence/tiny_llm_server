@@ -10,7 +10,7 @@ import queue
 
 
 # it seems python thread is limited to max ~ 12, need to write dedicated c client for better benchmarking
-NUM_THREADS = 12
+NUM_THREADS = 20
 MAX_REQUESTS = 300
 
 print_lock = threading.Lock()

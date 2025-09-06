@@ -102,12 +102,13 @@ void TaskDispatcher::process_message(std::function<bool(const std::string&)> chu
     bool client_disconnected = false;
     while(!is_last) {
         std::string chunk_data;
-        bool success = ipc_manager->wait_for_response_chunk(assigned_worker, task_id, chunk_data, is_last);
+        bool success = ipc_manager->wait_for_response_chunk(assigned_worker, task_id, chunk_data, is_last, chunk_callback, client_disconnected);
         
         if (!success) {
             if (!client_disconnected) { // Only send error if client was still connected
                 chunk_callback("{\"error\": \"Failed to receive response from worker\"}");
             }
+            // ipc_manager->cancel_request(assigned_worker, task_id);
             break;
         }
 
@@ -121,7 +122,7 @@ void TaskDispatcher::process_message(std::function<bool(const std::string&)> chu
         if (!chunk_callback(escaped_chunk_json_data)) {
             client_disconnected = true;
             DEBUG_COUT("Client disconnected for task " << task_id << ". Attempting to cancel.");
-            ipc_manager->cancel_request(assigned_worker, task_id);
+            // ipc_manager->cancel_request(assigned_worker, task_id);
             // We will now continue the loop to drain remaining chunks from the worker,
             // in case cancellation was too late and the worker is already processing.
         }

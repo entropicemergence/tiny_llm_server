@@ -5,6 +5,7 @@
 #include <sstream>
 #include <thread>
 #include <chrono>
+#include <time.h>
 
 
 #ifdef DEBUG_PRINT
@@ -133,10 +134,20 @@ bool IPCManager::initialize() {
         sem_resp_consumed_name << SEM_RESP_CONSUMED_PREFIX << i;
 
         if (is_server) {
-            sem_request_items[i] = sem_open(sem_req_items_name.str().c_str(), O_CREAT, 0666, 0);
-            sem_req_space[i] = sem_open(sem_req_space_name.str().c_str(), O_CREAT, 0666, RING_CAP_PER_WORKER);
-            sem_resp[i] = sem_open(sem_resp_name.str().c_str(), O_CREAT, 0666, 0);
-            sem_resp_consumed[i] = sem_open(sem_resp_consumed_name.str().c_str(), O_CREAT, 0666, 1);
+            auto create_semaphore = [&](const char* name, int value) -> sem_t* {
+                sem_t* sem = sem_open(name, O_CREAT | O_EXCL, 0666, value);
+                if (sem == SEM_FAILED && errno == EEXIST) {
+                    DEBUG_COUT("Semaphore " << name << " already exists, unlinking and recreating.");
+                    sem_unlink(name);
+                    sem = sem_open(name, O_CREAT, 0666, value);
+                }
+                return sem;
+            };
+
+            sem_request_items[i] = create_semaphore(sem_req_items_name.str().c_str(), 0);
+            sem_req_space[i] = create_semaphore(sem_req_space_name.str().c_str(), RING_CAP_PER_WORKER);
+            sem_resp[i] = create_semaphore(sem_resp_name.str().c_str(), 0);
+            sem_resp_consumed[i] = create_semaphore(sem_resp_consumed_name.str().c_str(), 1);
         } else {
             sem_request_items[i] = sem_open(sem_req_items_name.str().c_str(), 0);
             sem_req_space[i] = sem_open(sem_req_space_name.str().c_str(), 0);
@@ -222,7 +233,57 @@ bool IPCManager::send_response_chunk(int worker_idx, uint64_t task_id, const std
 
 // Used by client to wait get the token chunk from worker. This is blocking call
 // It works by loading worker response slot, then match the task_id. if not match, wake up another thread, hopefully the owner of correct task_id, then sleep this thread.
-bool IPCManager::wait_for_response_chunk(int worker_idx, uint64_t task_id, std::string& chunk, bool& is_last) {
+// bool IPCManager::wait_for_response_chunk(int worker_idx, uint64_t task_id, std::string& chunk, bool& is_last, const std::function<bool(const std::string&)>& on_timeout_callback, bool& client_disconnected) {
+//     int multiplier = 0;
+//     while (true) {
+//         struct timespec ts;
+//         if (clock_gettime(CLOCK_REALTIME, &ts) == -1) {
+//             DEBUG_CERR("clock_gettime failed: " << strerror(errno));
+//             return false;
+//         }
+//         ts.tv_sec += 1; // 1-second timeout from now
+
+//         if (sem_timedwait(sem_resp[worker_idx], &ts) == -1) {
+//             if (errno == ETIMEDOUT) {
+//                 if (on_timeout_callback) {
+//                     std::cout << "On timeout callback" <<task_id<< std::endl;
+//                     if (!on_timeout_callback("{\"chunk\": \"" + std::string("+") + "\", \"is_last\": " + std::string("false") + "}")) { // Callback returns false on client disconnect
+//                         client_disconnected = true;
+//                         return false;
+//                     }
+//                 }
+//                 continue; // Continue waiting, jump to the top of the loop
+//             }
+//             DEBUG_CERR("Failed to wait for response from worker " << worker_idx << ": " << strerror(errno));
+//             return false;
+//         }
+        
+//         RespSlot& slot = shared_mem_ptr->resp_slots[worker_idx];
+//         uint64_t received_task_id = slot.task_id.load();
+        
+//         if (received_task_id == task_id) {
+//             chunk.assign(slot.data, slot.len);
+//             is_last = slot.is_last_piece;
+//             sem_post(sem_resp_consumed[worker_idx]); // Signal worker: chunk consumed, you can now write the next one. worker wait for this to be posted before sending another chunk
+//             return true;
+//         } else {
+//             // This is not the chunk we are looking for. Post back to the response semaphore to wake up another waiting thread.
+//             sem_post(sem_resp[worker_idx]);
+//             // Yield to give other threads a chance to run and check the chunk.
+//             std::this_thread::sleep_for(std::chrono::milliseconds(25));
+//             multiplier++;
+//             if (multiplier%5 == 0) {
+//                 if (!on_timeout_callback("{\"chunk\": \"" + std::string("+") + "\", \"is_last\": " + std::string("false") + "}")) { // Callback returns false on client disconnect
+//                     client_disconnected = true;
+//                     return false;
+//                 }
+//             }
+//         }
+//     }
+// }
+
+
+bool IPCManager::wait_for_response_chunk(int worker_idx, uint64_t task_id, std::string& chunk, bool& is_last, const std::function<bool(const std::string&)>& on_timeout_callback, bool& client_disconnected) {
     while (true) {
         if (sem_wait(sem_resp[worker_idx]) == -1) {DEBUG_CERR("Failed to wait for response from worker " << worker_idx << ": " << strerror(errno));return false;}
         
@@ -242,7 +303,6 @@ bool IPCManager::wait_for_response_chunk(int worker_idx, uint64_t task_id, std::
         }
     }
 }
-
 /* -----------------------------------------------------------------Utility section----------------------------------------------------------------------------------*/
 
 // Get the number of requests in the worker's request queue. Mainly for load balancing, looking for worker with the least requests in queue.

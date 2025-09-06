@@ -17,7 +17,7 @@
 #define INVALID_SOCKET -1
 #define SOCKET_ERROR -1
 #define closesocket close
-
+#include <string.h>
 
 #include "server/task_dispatcher.hpp"
 #include "utils/http_utils.hpp"
@@ -40,7 +40,8 @@ void ctrl_c_signal_handler(int signal) {
 
 // Add section to setup global environment, containing model, worker binary path, and other dynamic variables. must adapt to where the base path where the program is called from
 // There is bug in wsl where the client cant connect at all with the server, solved by restarting wsl. 
-// currently when the client close connection abruptly the worker beceome stuck and unable to proccess subsequent requests
+// currently when the client close connection abruptly the worker beceome stuck and unable to proccess subsequent requests.
+// enabling DEBUG_PRINT will ensure server and client communicate okay, this is very subtle bug
 
 class HttpInferenceServer {
 private:
@@ -90,17 +91,21 @@ public:
 
     // Handle client connection
     void handleClient(SOCKET clientSocket) {
+        DEBUG_COUT("Handling new client on socket " << clientSocket);
         // Set TCP_NODELAY to disable Nagle's algorithm for lower latency
         int opt = 1;
         setsockopt(clientSocket, IPPROTO_TCP, TCP_NODELAY, (char*)&opt, sizeof(opt));
 
         HttpRequest request;
+        DEBUG_COUT("Reading and parsing HTTP request from client " << clientSocket);
         if (!HttpUtils::readAndParseHttpRequest(clientSocket, request)) {
+            DEBUG_CERR("Failed to read/parse HTTP request from client " << clientSocket);
             std::string response = HttpUtils::buildHttpResponse(400, "Bad Request", "{\"error\": \"Invalid HTTP request\"}");    // send bad request response to client. Close connection.
             send(clientSocket, response.c_str(), response.length(), 0);
             closesocket(clientSocket);
             return;
         }
+        DEBUG_COUT("Successfully parsed request from client " << clientSocket << ": " << request.method << " " << request.path);
 
         if (request.method == "POST" && request.path == "/process") {
             ProcessRequest request_parsed;
@@ -140,9 +145,11 @@ public:
                 closesocket(clientSocket);
             }
         } else if (request.method == "GET" && request.path == "/ping") {
+            DEBUG_COUT("Handling /ping request from client " << clientSocket);
             std::string response = HttpUtils::buildHttpResponse(200, "OK", "{\"status\": \"ok\"}");
             send(clientSocket, response.c_str(), response.length(), 0);
             closesocket(clientSocket);
+            DEBUG_COUT("Finished /ping request for client " << clientSocket);
         } else {
             std::string response = HttpUtils::buildHttpResponse(404, "Not Found", "{\"error\": \"Endpoint not found\"}");
             send(clientSocket, response.c_str(), response.length(), 0);
@@ -177,11 +184,17 @@ public:
             FD_SET(serverSocket, &read_fds);    // add the server socket to the set, this way file descriptor for server socket is monitored for read events
 
             // Set timeout to periodically check shutdown flag.
-            struct timeval timeout; timeout.tv_sec = 1;
+            struct timeval timeout; 
+            timeout.tv_sec = 1;
+            timeout.tv_usec = 0;   // This is the damn problem, timeval struct has to be initialized both the sec and usec, otherwise the will hold garbage !
+
  
+            DEBUG_COUT("Waiting for connection on select()...");
             // Wait for activity on server socket or timeout
             int activity = select(serverSocket + 1, &read_fds, nullptr, nullptr, &timeout);  // system call that monitors multiple file descriptors (like sockets). 0 = timeout, > 0 = activity, < 0 = error
-            if ((activity < 0) && (errno!=EINTR)) { DEBUG_COUT("Select error");}
+            if ((activity < 0) && (errno!=EINTR)) { DEBUG_CERR("Select error: " << strerror(errno));}
+            else if (activity > 0) { DEBUG_COUT("select() returned activity. Accepting connection..."); }
+
 
             if (activity > 0 && FD_ISSET(serverSocket, &read_fds)) { // FD_ISSET checks if server socket is in the set
                 sockaddr_in clientAddr;
