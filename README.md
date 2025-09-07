@@ -126,7 +126,7 @@ The underlying language model is a compact, decoder-only Transformer network des
 -   **Context Window**: 512 tokens (`max_context`). In practice this is limited to ~50 tokens, as the inference code haven't implmented KV catching yet
 -   **Vocabulary Size**: 3266 tokens, handled by a custom hybrid word/character tokenizer.
 
-The model is implemented from scratch in C++ for the inference server, with the original model trained in PyTorch. The training code is available in the `script` directory.
+The model is implemented from scratch in C++ for the inference server, with the original model trained in PyTorch. The training code is available in the `script` directory. Note that the model is barely coherent because it's very tiny and the training corpus only consist of 4.5 million tokens.
 
 ```mermaid
 graph TD
@@ -235,7 +235,7 @@ graph TD
     ```
 
 3.  **Run the build script:**
-    This script will check dependencies, configure the project with CMake, and compile the server and llm inference engine. The compile process should take less than 10 seconds.
+    This script will check dependencies, configure the project with CMake, and compile the server and llm inference engine. The first compile process should take less than 10 seconds.
     ```bash
     ./build_linux.sh
     ```
@@ -271,7 +271,7 @@ Submits a prompt for inference.
     for now the model only supports max 50 tokens.
 -   **Example `curl` command**:
     ```bash
-    curl -X POST http://localhost:8080/process -H "Content-Type: application/json" -d '{"message":"hello"}'
+    curl -X POST -N http://localhost:8080/process -H "Content-Type: application/json" -d '{"message":"One day","max_tokens":50}'
     ```
 
 ### `GET /ping`

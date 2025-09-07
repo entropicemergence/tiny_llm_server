@@ -81,7 +81,7 @@ def test_process(message, thread_id, request_id):
     try:
         url = "http://127.0.0.1:8080/process"
         headers = {"Content-Type": "application/json"}
-        payload = {"message": message, "max_tokens": 25 + random.randint(0, 25)}
+        payload = {"message": message, "max_tokens": 28 + random.randint(0, 10)}
 
         start_time = time.time()
         

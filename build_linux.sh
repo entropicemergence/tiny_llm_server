@@ -61,4 +61,4 @@ read -n 1 -s
 
 
 # build/inference
-build/server
+# build/server

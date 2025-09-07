@@ -63,7 +63,8 @@ void TaskDispatcher::process_message(std::function<bool(const std::string&)> chu
     worker_manager->on_request_start(assigned_worker);
 
     // Enqueue the request specifically for the assigned worker
-    if (!ipc_manager->enqueue_request(assigned_worker, message, task_id)) {
+    std::string encoded_message = std::to_string(max_tokens) + '\x01' + message;
+    if (!ipc_manager->enqueue_request(assigned_worker, encoded_message, task_id)) {
         worker_manager->on_request_complete(assigned_worker); // Clean up on failure
         chunk_callback("{\"error\": \"Failed to enqueue request - server may be overloaded\"}");
         return;

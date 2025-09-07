@@ -26,10 +26,6 @@ add_library(inference_lib
     src/llm/tiny_llm_inference.cpp
 )
 
-# Create worker processing library
-add_library(worker_lib
-    src/worker/simple_worker.cpp
-)
 
 # Create server dispatcher library
 add_library(server_lib
@@ -77,7 +73,6 @@ target_link_libraries(server
 # Link libraries for worker
 target_link_libraries(worker
     inference_lib
-    worker_lib
     ipc_lib
     Threads::Threads
 )
