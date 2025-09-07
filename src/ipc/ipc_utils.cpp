@@ -37,7 +37,7 @@ IPCManager::~IPCManager() {
             sem_close(sem_request_items[i]);
             if (is_server) {
                 std::ostringstream ss;
-                ss << SEM_REQ_ITEMS_PREFIX << i;
+                ss << get_sem_req_items_prefix() << i;
                 sem_unlink(ss.str().c_str());
             }
         }
@@ -45,7 +45,7 @@ IPCManager::~IPCManager() {
             sem_close(sem_req_space[i]);
             if (is_server) {
                 std::ostringstream ss;
-                ss << SEM_REQ_SPACE_PREFIX << i;
+                ss << get_sem_req_space_prefix() << i;
                 sem_unlink(ss.str().c_str());
             }
         }
@@ -53,7 +53,7 @@ IPCManager::~IPCManager() {
             sem_close(sem_resp[i]);
             if (is_server) {
                 std::ostringstream ss;
-                ss << SEM_RESP_PREFIX << i;
+                ss << get_sem_resp_prefix() << i;
                 sem_unlink(ss.str().c_str());
             }
         }
@@ -61,7 +61,7 @@ IPCManager::~IPCManager() {
             sem_close(sem_resp_consumed[i]);
             if (is_server) {
                 std::ostringstream ss;
-                ss << SEM_RESP_CONSUMED_PREFIX << i;
+                ss << get_sem_resp_consumed_prefix() << i;
                 sem_unlink(ss.str().c_str());
             }
         }
@@ -74,7 +74,7 @@ IPCManager::~IPCManager() {
     if (shared_mem_file_descriptor != -1) {
         close(shared_mem_file_descriptor);
         if (is_server) {
-            shm_unlink(SHM_NAME);
+            shm_unlink(get_shm_name());
         }
     }
     std::cout << "IPCManager cleaned up successfully" << std::endl;
@@ -83,13 +83,13 @@ IPCManager::~IPCManager() {
 bool IPCManager::initialize() {
     // On server startup, clean up any orphaned IPC objects from a previous run.
     if (is_server) {
-        shm_unlink(SHM_NAME); // Unlink shared memory
+        shm_unlink(get_shm_name()); // Unlink shared memory
         for (int i = 0; i < MAX_WORKERS; ++i) {
             std::ostringstream sem_req_items_name, sem_req_space_name, sem_resp_name, sem_resp_consumed_name;
-            sem_req_items_name << SEM_REQ_ITEMS_PREFIX << i;
-            sem_req_space_name << SEM_REQ_SPACE_PREFIX << i;
-            sem_resp_name << SEM_RESP_PREFIX << i;
-            sem_resp_consumed_name << SEM_RESP_CONSUMED_PREFIX << i;
+            sem_req_items_name << get_sem_req_items_prefix() << i;
+            sem_req_space_name << get_sem_req_space_prefix() << i;
+            sem_resp_name << get_sem_resp_prefix() << i;
+            sem_resp_consumed_name << get_sem_resp_consumed_prefix() << i;
             sem_unlink(sem_req_items_name.str().c_str());
             sem_unlink(sem_req_space_name.str().c_str());
             sem_unlink(sem_resp_name.str().c_str());
@@ -99,7 +99,7 @@ bool IPCManager::initialize() {
 
     // Create or open shared memory
     if (is_server) {
-        shared_mem_file_descriptor = shm_open(SHM_NAME, O_CREAT | O_RDWR, 0666);
+        shared_mem_file_descriptor = shm_open(get_shm_name(), O_CREAT | O_RDWR, 0666);
         if (shared_mem_file_descriptor == -1) {
             std::cerr << "Failed to create shared memory: " << strerror(errno) << std::endl;
             return false;
@@ -109,7 +109,7 @@ bool IPCManager::initialize() {
             return false;
         }
     } else {
-        shared_mem_file_descriptor = shm_open(SHM_NAME, O_RDWR, 0666);
+        shared_mem_file_descriptor = shm_open(get_shm_name(), O_RDWR, 0666);
         if (shared_mem_file_descriptor == -1) {
             std::cerr << "Failed to open shared memory: " << strerror(errno) << std::endl;
             return false;
@@ -130,10 +130,10 @@ bool IPCManager::initialize() {
     // Open semaphores
     for (int i = 0; i < MAX_WORKERS; ++i) {
         std::ostringstream sem_req_items_name, sem_req_space_name, sem_resp_name, sem_resp_consumed_name;
-        sem_req_items_name << SEM_REQ_ITEMS_PREFIX << i;
-        sem_req_space_name << SEM_REQ_SPACE_PREFIX << i;
-        sem_resp_name << SEM_RESP_PREFIX << i;
-        sem_resp_consumed_name << SEM_RESP_CONSUMED_PREFIX << i;
+        sem_req_items_name << get_sem_req_items_prefix() << i;
+        sem_req_space_name << get_sem_req_space_prefix() << i;
+        sem_resp_name << get_sem_resp_prefix() << i;
+        sem_resp_consumed_name << get_sem_resp_consumed_prefix() << i;
 
         if (is_server) {
             auto create_semaphore = [&](const char* name, int value) -> sem_t* {

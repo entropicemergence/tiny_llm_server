@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cstdint>
 #include <cstddef>
+#include "../utils/config.hpp"
 
 // Configuration constants
 constexpr size_t CHUNK_SIZE = 4096;        // Maximum message size
@@ -10,13 +11,12 @@ constexpr size_t MAX_WORKERS = 8;          // Maximum number of worker processes
 constexpr size_t RING_CAP_PER_WORKER = 32; // Capacity of each worker's request queue, MUST be a power of 2
 
 // Shared memory object names
-constexpr const char* SHM_NAME = "/inference_shm";
+const char* get_shm_name();
+const char* get_sem_req_items_prefix();
+const char* get_sem_req_space_prefix();
+const char* get_sem_resp_prefix();
+const char* get_sem_resp_consumed_prefix();
 
-// Semaphore names
-constexpr const char* SEM_REQ_ITEMS_PREFIX = "/sem_req_items_";
-constexpr const char* SEM_REQ_SPACE_PREFIX = "/sem_req_space_";
-constexpr const char* SEM_RESP_PREFIX = "/sem_resp_";    // Response semaphores (per worker)
-constexpr const char* SEM_RESP_CONSUMED_PREFIX = "/sem_resp_consumed_"; // Semaphore for consumed responses chunks
 
 // Request slot structure,
 struct ReqSlot {

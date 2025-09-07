@@ -1,5 +1,6 @@
 #include "task_dispatcher.hpp"
 #include "../utils/http_utils.hpp"
+#include "../utils/config.hpp"
 #include <iostream>
 #include <chrono>
 #include <thread>
@@ -17,8 +18,13 @@
 
 
 TaskDispatcher::TaskDispatcher() : should_stop_monitoring(false) {
+    auto& config = AppConfig::get_instance();
+    std::string worker_path = config.get_string("WORKER_EXECUTABLE_PATH", "./build/worker");
+    int min_workers = config.get_int("MIN_WORKERS", 2);
+    int max_workers = config.get_int("MAX_WORKERS_DYNAMIC", 4);
+
     ipc_manager = std::make_unique<IPCManager>(true);  // true = server mode
-    worker_manager = std::make_unique<WorkerManager>(ipc_manager.get(), "./build/worker", 2, 4);  // min=2, max=4 workers
+    worker_manager = std::make_unique<WorkerManager>(ipc_manager.get(), worker_path, min_workers, max_workers);
 }
 
 TaskDispatcher::~TaskDispatcher() {

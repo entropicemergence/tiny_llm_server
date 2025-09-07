@@ -6,9 +6,10 @@
 #include "simple_tokenizer.hpp"
 #include "tensor.hpp"
 #include "transformer.hpp"
+#include "../utils/config.hpp"
 
-const std::string TransformerParameters::model_path = "model/weights";
-const std::string TransformerParameters::tokenizer_path = "model/tinystories_tokenizer_vocab.json";
+const std::string TransformerParameters::model_path = AppConfig::get_instance().get_string("MODEL_PATH", "model/weights");
+const std::string TransformerParameters::tokenizer_path = AppConfig::get_instance().get_string("TOKENIZER_PATH", "model/tinystories_tokenizer_vocab.json");
 
 TinyLLM::TinyLLM()
     : tokenizer(nullptr), transformer(nullptr) {

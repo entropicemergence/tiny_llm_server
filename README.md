@@ -241,7 +241,11 @@ graph TD
     ```
 
 4.  **Start the server:**
-    Start the server from the root directory with `./build/server`. By default, it runs on `http://localhost:8080`. Though I notice some huge latency in local DNS resolver while in WSL, so for full performance, use `http://127.0.0.1:8080` instead.
+    Start the server from the root directory with. 
+    ```bash
+    ./build/server
+    ```
+    By default, it runs on `http://localhost:8080`. Though I notice some huge latency in local DNS resolver while in WSL, so for full performance, use `http://127.0.0.1:8080` instead.
 
 5.  **Run the test client:**
     I have prepared a suite of test clients in the `client` directory for debugging and benchmarking. require `pip install requests`
@@ -271,7 +275,7 @@ Submits a prompt for inference.
     for now the model only supports max 50 tokens.
 -   **Example `curl` command**:
     ```bash
-    curl -X POST -N http://localhost:8080/process -H "Content-Type: application/json" -d '{"message":"One day","max_tokens":50}'
+    curl -X POST -N http://127.0.0.1:8080/process -H "Content-Type: application/json" -d '{"message":"One day","max_tokens":50}'
     ```
 
 ### `GET /ping`
@@ -280,7 +284,7 @@ A simple health check endpoint.
 
 -   **Example `curl` command**:
     ```bash
-    curl http://localhost:8080/ping
+    curl http://127.0.0.1:8080/ping
     ```
 -   **Success Response**:
     ```json

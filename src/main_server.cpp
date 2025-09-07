@@ -21,6 +21,7 @@
 
 #include "server/task_dispatcher.hpp"
 #include "utils/http_utils.hpp"
+#include "utils/config.hpp"
 
 // #define DEBUG_PRINT
 
@@ -222,6 +223,13 @@ int main() {
     signal(SIGINT, ctrl_c_signal_handler);   // SIGINT is the signal for ctrl+c
     signal(SIGPIPE, SIG_IGN);                // Ignore SIGPIPE to prevent crashes on broken client connections
     std::cout << "Starting Mock Inference Server..." << std::endl;
+
+    // Load configuration
+    if (!AppConfig::get_instance().load("config.txt")) {
+        std::cerr << "Failed to load configuration file. Exiting." << std::endl;
+        return 1;
+    }
+
     // Minimal Oatpp usage - just for environment initialization
     // oatpp::base::Environment::init();
 

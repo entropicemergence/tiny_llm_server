@@ -16,6 +16,13 @@ include_directories(src)
 # Create IPC library (shared between server and worker)
 add_library(ipc_lib
     src/ipc/ipc_utils.cpp
+    src/ipc/shared_mem.cpp
+)
+
+# Create a new utils library for config and http
+add_library(utils_lib
+    src/utils/config.cpp
+    src/utils/http_utils.cpp
 )
 
 # Create tokenizer library
@@ -25,14 +32,14 @@ add_library(inference_lib
     src/llm/transformer.cpp
     src/llm/tiny_llm_inference.cpp
 )
-
+target_link_libraries(inference_lib PRIVATE utils_lib)
 
 # Create server dispatcher library
 add_library(server_lib
     src/server/task_dispatcher.cpp
     src/server/worker_manager.cpp
-    src/utils/http_utils.cpp
 )
+target_link_libraries(server_lib PRIVATE utils_lib)
 
 # Create server executable
 add_executable(server
@@ -65,6 +72,7 @@ target_compile_definitions(inference PRIVATE INFERENCE_LOOP)
 target_link_libraries(server 
     server_lib
     ipc_lib
+    utils_lib
     # oatpp
     Threads::Threads
 )
