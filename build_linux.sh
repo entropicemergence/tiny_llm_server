@@ -5,9 +5,9 @@
 echo "Building HTTP Server for Ubuntu/WSL..."
 
 # # Remove build directory if it exists
-# if [ -d "build_linux" ]; then
-#     echo "Removing existing build_linux directory..."
-#     rm -rf build_linux
+# if [ -d "build" ]; then
+#     echo "Removing existing build directory..."
+#     rm -rf build
 # fi
 
 # Check if required tools are installed
@@ -35,26 +35,16 @@ if [ "$CMAKE_MAJOR" -lt 3 ] || ([ "$CMAKE_MAJOR" -eq 3 ] && [ "$CMAKE_MINOR" -lt
     exit 1
 fi
 
-# Initialize git submodules if they don't exist
-if [ ! -f "external/oatpp/CMakeLists.txt" ]; then
-    echo "Initializing git submodules..."
-    git submodule update --init --recursive
-    if [ $? -ne 0 ]; then
-        echo "ERROR: Failed to initialize git submodules"
-        echo "Make sure you're in a git repository and have internet access"
-        exit 1
-    fi
-fi
 
 # Configure and build using CMake preset
 echo "Configuring and building with CMake preset..."
-cmake --preset linux-release -B build_linux
+cmake --preset linux-release -B build
 if [ $? -ne 0 ]; then
     echo "ERROR: Configuration failed"
     exit 1
 fi
 
-cmake --build build_linux
+cmake --build build
 if [ $? -ne 0 ]; then
     echo "ERROR: Build failed"
     exit 1
@@ -63,11 +53,11 @@ fi
 echo ""
 echo "Build completed successfully!"
 echo ""
-echo "Executables are available in: build_linux/"
+echo "Executables are available in: build/"
 echo "  - server  (HTTP Server on port 8080)"
 echo ""
 echo "To run the server:"
-echo "  ./build_linux/server"
+echo "  ./build/server"
 echo ""
 echo "To test the server:"
 echo "  curl -X POST http://localhost:8080/process -H \"Content-Type: application/json\" -d '{\"message\":\"Hello World\"}'"
@@ -76,5 +66,5 @@ echo "Press any key to continue..."
 # read -n 1 -s
 
 
-# build_linux/inference
-build_linux/server
+# build/inference
+build/server

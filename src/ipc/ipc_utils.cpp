@@ -17,6 +17,8 @@
 #endif
 
 
+/* -----------------------------------------------------------------Constructor and Destructor section----------------------------------------------------------------------------------*/
+
 IPCManager::IPCManager(bool server, int worker_idx) 
     : shared_mem_ptr(nullptr), shared_mem_file_descriptor(-1), is_server(server), worker_index(worker_idx) {
     std::cout << "Building IPCManager with: server=" << server << ", worker_idx=" << worker_idx << std::endl;

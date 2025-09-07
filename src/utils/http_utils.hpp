@@ -3,7 +3,6 @@
 
 #include <string>
 #include <map>
-#include <sstream>
 
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -50,6 +49,9 @@ public:
 
     // Build an HTTP chunk
     static std::string buildHttpChunk(const std::string& data);
+
+    // Build JSON response chunk with proper escaping
+    static std::string build_json_response_chunk(const std::string &s, bool is_last);
 };
 
 #endif // HTTP_UTILS_HPP

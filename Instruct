@@ -1,9 +1,0 @@
-git submodule update --init
-
-chmod +x build_ubuntu.sh
-
-
-sudo apt install cmake
-
-
-sudo apt install ninja-build

@@ -38,10 +38,10 @@ void ctrl_c_signal_handler(int signal) {
     global_shutdown_flag.store(true);
 }
 
-// Add section to setup global environment, containing model, worker binary path, and other dynamic variables. must adapt to where the base path where the program is called from
-// There is bug in wsl where the client cant connect at all with the server, solved by restarting wsl. 
-// currently when the client close connection abruptly the worker beceome stuck and unable to proccess subsequent requests.
-// enabling DEBUG_PRINT will ensure server and client communicate okay, this is very subtle bug
+/* Add section to setup global environment, containing model, worker binary path, and other dynamic variables. must adapt to where the base path where the program is called from
+There is bug in wsl where the client cant connect at all with the server, solved by restarting wsl. 
+currently when the client close connection abruptly the worker beceome stuck and unable to proccess subsequent requests.
+enabling DEBUG_PRINT will ensure server and client communicate okay, this is very subtle bug. turns out timeval struct has to be initialized both the sec and usec, otherwise the will hold garbage ! */
 
 class HttpInferenceServer {
 private:

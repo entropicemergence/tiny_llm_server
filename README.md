@@ -1,350 +1,262 @@
-# Mock Inference Server with Shared Memory Worker System
+# TinyLLM Inference Server
 
-A high-performance HTTP server that processes requests using a pool of worker processes communicating via shared memory IPC. Built with C++17, POSIX shared memory, and semaphores.
-
-## Architecture
-
-```
-          ┌───────────────────────────┐
-          │      HTTP Server          │
-          │  POST /process {msg}      │
-          └────────────┬──────────────┘
-                       │
-                       ▼
-            ┌───────────────────────┐     POSIX shm + sems
-            │   Task Dispatcher     │◄━━━━━━━━━━━━━━━━━━━━━━━━━━┐
-            │  (Round-robin)        │                           │
-            └────────┬──────────────┘                           │
-       enqueue req   │  assign worker i                         │
-    (req ring, sems) │  await resp_i                            │
-                     ▼                                          │
-   ┌─────────────────────────────────────────┐                  │
-   │         SHARED MEMORY REGION            │                  │
-   │ ┌───────────────┐  ┌─────────────────┐  │                  │
-   │ │ Request Ring  │  │ Response Slots  │  │                  │
-   │ │  (256 slots)  │  │ [0..3] (4 max)  │  │                  │
-   │ └───────────────┘  └─────────────────┘  │                  │
-   │ head/tail + semaphores + task_ids       │                  │
-   └─────────────────────────────────────────┘                  │
-                     ▲                                          │
-                     │  claim task i                            │
-                     │  write resp_i                            │
-      ┌──────────────┴──────────────┐         ┌─────────────────┴────────────┐
-      │         Worker #0           │         │          Worker #3           │
-      │  loop: pop→process→publish  │  ...    │   loop: pop→process→publish  │
-      └─────────────────────────────┘         └──────────────────────────────┘
-```
+A high-performance, multi-process C++ inference server designed to serve the TinyLLM model. It's built from the ground up using low-level sockets and shared memory for efficient, low-latency request handling.
 
 ## Features
 
-- **HTTP API**: Simple REST endpoint for message processing
-- **Automatic Worker Management**: Server spawns and manages worker processes
-- **Dynamic Scaling**: Workers scale up/down based on load (2-4 workers)
-- **Shared Memory IPC**: High-performance inter-process communication
-- **Concurrency**: Supports multiple parallel HTTP requests
-- **Round-robin Dispatch**: Automatic load balancing across workers
-- **Health Monitoring**: Automatic restart of crashed workers
-- **Graceful Shutdown**: Clean termination of all processes
-- **Bounded Memory**: Fixed-size ring buffer prevents memory growth
+-   **Multi-Process Architecture**: Isolates inference tasks in dedicated worker processes for scalability and stability.
+-   **High-Performance IPC**: Uses shared memory and semaphores for fast communication between the main server and workers.
+-   **Streaming API**: Delivers generated tokens back to clients in real-time using HTTP chunked encoding.
+-   **Minimal Dependencies**: Built with standard C++ and POSIX sockets to keep it lightweight and fast.
+-   **Graceful Shutdown**: Ensures clean termination of all server and worker processes on `Ctrl+C`.
 
-## Requirements
+## Architecture & Request Flow
 
-- **OS**: Linux/Unix (POSIX shared memory and semaphores required)
-- **Compiler**: GCC/Clang with C++17 support
-- **Build System**: CMake 3.20+
-- **Dependencies**: 
-  - POSIX threads (pthread)
-  - POSIX real-time extensions (librt)
-  - Oat++ (included as submodule)
+The server operates by accepting HTTP requests and passing them to a pool of worker processes via a task dispatcher. Communication is handled through a shared memory queue, synchronized by semaphores. This design allows the main server to remain responsive while workers perform the heavy lifting of model inference.
 
-## Building
 
-### 1. Clone and Initialize Submodules
-
-```bash
-git clone <repository-url>
-cd server_mock_inferance
-git submodule update --init --recursive
-```
-
-### 2. Build with CMake
-
-```bash
-mkdir build
-cd build
-cmake ..
-make -j$(nproc)
-```
-
-This creates two executables:
-- `./server` - HTTP server with task dispatcher
-- `./worker` - Worker process
-
-### 3. Alternative: Use Build Script
-
-```bash
-# For Ubuntu/Linux
-./build_ubuntu.sh
-```
-
-## Running the System
-
-### 1. Start the Server
-
-The server automatically manages worker processes - no manual worker startup required!
-
-```bash
-./server
-```
-
-Server output:
-```
-Starting Mock Inference Server...
-Initializing task dispatcher...
-WorkerManager initialized: min=2, max=4, executable=./worker
-Starting initial 2 worker processes...
-Spawning worker 0...
-Worker 0 spawned with PID 12345
-Spawning worker 1...
-Worker 1 spawned with PID 12346
-Successfully started 2 workers
-Task dispatcher initialized successfully
-Started with 2 workers
-Server running on http://0.0.0.0:8080
-Available endpoints:
-  POST /process - Process a message
-Press Ctrl+C to stop the server
-```
-
-### 2. Test the API
-
-```bash
-# Basic test
-curl -X POST http://localhost:8080/process \
-     -H "Content-Type: application/json" \
-     -d '{"message": "hello world"}'
-
-# Expected response:
-# {"result": "WORKER_PROCESSED: DLROW OLLEH"}
-
-# Multiple requests (test concurrency)
-for i in {1..10}; do
-  curl -X POST http://localhost:8080/process \
-       -H "Content-Type: application/json" \
-       -d "{\"message\": \"test message $i\"}" &
-done
-wait
-```
-
-## API Reference
-
-### POST /process
-
-Process a message using the worker pool.
-
-**Request:**
-```json
-{
-  "message": "your text here"
-}
-```
-
-**Response (Success):**
-```json
-{
-  "result": "WORKER_PROCESSED: PROCESSED_TEXT"
-}
-```
-
-**Response (Error):**
-```json
-{
-  "error": "Error description"
-}
-```
-
-**Status Codes:**
-- `200 OK` - Successfully processed
-- `400 Bad Request` - Invalid JSON or missing message field
-- `404 Not Found` - Invalid endpoint
-- `500 Internal Server Error` - Processing failed
-
-## Processing Logic
-
-Workers currently implement a simple transformation:
-1. Reverse the input string
-2. Convert to uppercase  
-3. Add "WORKER_PROCESSED: " prefix
-
-Example: `"hello"` → `"WORKER_PROCESSED: OLLEH"`
-
-## System Configuration
-
-Key constants (in `src/ipc/shared_mem.hpp`):
-
-```cpp
-constexpr size_t RING_CAP = 256;        // Request ring buffer capacity
-constexpr size_t CHUNK_SIZE = 4096;     // Maximum message size (4KB)
-constexpr size_t MAX_WORKERS = 4;       // Maximum number of worker processes
-```
-
-Worker scaling configuration (in `src/server/worker_manager.cpp`):
-
-```cpp
-static constexpr int SCALE_UP_THRESHOLD = 5;    // Scale up if >5 pending requests
-static constexpr int SCALE_DOWN_THRESHOLD = 2;  // Scale down if <2 avg requests per worker
-static constexpr std::chrono::seconds SCALE_CHECK_INTERVAL{10}; // Check every 10 seconds
-static constexpr std::chrono::seconds WORKER_IDLE_TIMEOUT{60};  // Kill idle workers after 60s
-```
-
-Default worker configuration: **2 minimum workers**, **4 maximum workers**.
-
-## Shared Memory Layout
-
-```cpp
-struct SharedMem {
-    std::atomic<size_t> head;           // Server enqueue position
-    std::atomic<size_t> tail;           // Worker dequeue position  
-    std::atomic<bool> shutdown_flag;    // Graceful shutdown signal
-    std::atomic<uint64_t> next_task_id; // Task ID counter
+```mermaid
+flowchart TD
+    %% Client and HTTP Layer
+    Client[Client Application] 
+    HTTP[HTTP Server<br/>main_server.cpp]
     
-    ReqSlot req[256];                   // Request ring buffer
-    RespSlot resp_slots[4];             // Response slots (per worker)
-};
+    %% Task Management Layer
+    TaskDisp[Task Dispatcher<br/>task_dispatcher.hpp]
+    WorkerMgr[Worker Manager<br/>worker_manager.hpp]
+    
+    %% IPC Layer
+    IPCMgr[IPC Manager<br/>ipc_utils.hpp]
+    SharedMem[(Shared Memory<br/>shared_mem.hpp)]
+    
+    %% Worker Processes
+    Worker1[Worker Process 1<br/>worker_main.cpp]
+    Worker2[Worker Process 2<br/>worker_main.cpp]
+    WorkerN[Worker Process N<br/>worker_main.cpp]
+    
+    %% LLM Components
+    LLM1[TinyLLM Engine<br/>tiny_llm_inference.hpp]
+    LLM2[TinyLLM Engine<br/>tiny_llm_inference.hpp]
+    LLMN[TinyLLM Engine<br/>tiny_llm_inference.hpp]
+    
+    %% HTTP Utils
+    HTTPUtils[HTTP Utils<br/>http_utils.hpp]
+    
+    %% Client Request Flow
+    Client -->|"POST /process<br/>{message, max_tokens}"| HTTP
+    HTTP -->|Parse Request| HTTPUtils
+    HTTPUtils -->|Extract JSON| HTTP
+    HTTP -->|Process Message| TaskDisp
+    
+    %% Task Dispatch Flow
+    TaskDisp -->|Assign Task| WorkerMgr
+    WorkerMgr -->|Find Available Worker| IPCMgr
+    IPCMgr -->|Enqueue Request| SharedMem
+    
+    %% Shared Memory Structure
+    SharedMem -->|Request Queue 0| Worker1
+    SharedMem -->|Request Queue 1| Worker2  
+    SharedMem -->|Request Queue N| WorkerN
+    SharedMem -->|Response Slot 0| Worker1
+    SharedMem -->|Response Slot 1| Worker2
+    SharedMem -->|Response Slot N| WorkerN
+    
+    %% Worker Processing Flow
+    Worker1 -->|Dequeue Request| SharedMem
+    Worker2 -->|Dequeue Request| SharedMem
+    WorkerN -->|Dequeue Request| SharedMem
+    
+    Worker1 -->|Initialize & Inference| LLM1
+    Worker2 -->|Initialize & Inference| LLM2
+    WorkerN -->|Initialize & Inference| LLMN
+    
+    LLM1 -->|Generate Tokens| Worker1
+    LLM2 -->|Generate Tokens| Worker2
+    LLMN -->|Generate Tokens| WorkerN
+    
+    %% Response Flow
+    Worker1 -->|Send Chunks| SharedMem
+    Worker2 -->|Send Chunks| SharedMem
+    WorkerN -->|Send Chunks| SharedMem
+    
+    SharedMem -->|Response Chunks| IPCMgr
+    IPCMgr -->|Wait for Chunks| TaskDisp
+    TaskDisp -->|Chunk Callback| HTTP
+    HTTP -->|HTTP Chunked Transfer| HTTPUtils
+    HTTPUtils -->|Build HTTP Chunks| HTTP
+    HTTP -->|Stream Response| Client
+    
+    %% Worker Management
+    WorkerMgr -->|Spawn/Monitor| Worker1
+    WorkerMgr -->|Spawn/Monitor| Worker2
+    WorkerMgr -->|Spawn/Monitor| WorkerN
+    WorkerMgr -->|Scale Up/Down| WorkerMgr
+    
+    %% IPC Synchronization
+    SharedMem -.->|Semaphores<br/>req_items, req_space<br/>resp, resp_consumed| SharedMem
+    
+    %% Styling
+    classDef clientStyle fill:#e1f5fe,stroke:#01579b,stroke-width:2px
+    classDef serverStyle fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+    classDef workerStyle fill:#e8f5e8,stroke:#1b5e20,stroke-width:2px
+    classDef ipcStyle fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    classDef llmStyle fill:#fce4ec,stroke:#880e4f,stroke-width:2px
+    classDef utilStyle fill:#f1f8e9,stroke:#33691e,stroke-width:2px
+    
+    class Client clientStyle
+    class HTTP,TaskDisp serverStyle
+    class Worker1,Worker2,WorkerN workerStyle
+    class IPCMgr,SharedMem ipcStyle
+    class LLM1,LLM2,LLMN llmStyle
+    class WorkerMgr,HTTPUtils utilStyle
 ```
 
-## Synchronization
 
-The system uses named POSIX semaphores:
 
-- `/sem_req_items` - Signals available requests (0→N)
-- `/sem_req_space` - Signals available space (N→0) 
-- `/sem_resp_0` to `/sem_resp_3` - Per-worker response signals
 
-## Error Handling
+## LLM Model Architecture
 
-Common issues and solutions:
+The underlying language model is a compact Transformer network.
 
-### "Failed to create shared memory: Permission denied"
-```bash
-# Check permissions
-ls -la /dev/shm/
-# Clean up stale shared memory
-sudo rm -f /dev/shm/mock_inference_shm
-sudo rm -f /dev/shm/sem.*
+```mermaid
+graph TD
+    %% Main System Architecture
+    subgraph "TinyLLM System"
+        TinyLLM["🧠 TinyLLM<br/>Main Interface"]
+        TinyLLM --> |"contains"| HybridTokenizer["📝 HybridTokenizer<br/>Text Processing"]
+        TinyLLM --> |"contains"| Transformer["🔄 Transformer<br/>Neural Network"]
+        TinyLLM --> |"maintains"| TokenIds["📋 token_ids<br/>Context Buffer"]
+    end
+    
+    %% Tokenizer Components
+    subgraph "Tokenizer Components"
+        HybridTokenizer --> WordVocab["📚 Word Vocabulary<br/>word_to_id / id_to_word"]
+        HybridTokenizer --> CharVocab["🔤 Char Vocabulary<br/>char_to_id / id_to_char"]
+        HybridTokenizer --> SpecialTokens["🏷️ Special Tokens<br/>PAD/UNK/BOS/EOS"]
+    end
+    
+    %% Transformer Architecture
+    subgraph "Transformer Architecture"
+        Transformer --> Embedding["🎯 Embedding<br/>Token → Vector"]
+        Transformer --> PE["📍 SinusoidalGlobalPE<br/>Positional Encoding"]
+        Transformer --> Blocks["🧱 Transformer Blocks<br/>(6 layers)"]
+        Transformer --> LNFinal["⚖️ LayerNorm Final<br/>ln_f"]
+        Transformer --> LMHead["🎪 Linear LM Head<br/>Output Projection"]
+    end
+    
+    %% Transformer Block Details
+    subgraph "Transformer Block"
+        Blocks --> LN1["⚖️ LayerNorm 1<br/>Pre-attention norm"]
+        Blocks --> MHA["🔗 MultiHeadAttention<br/>Self-attention (6 heads)"]
+        Blocks --> LN2["⚖️ LayerNorm 2<br/>Pre-feedforward norm"]
+        Blocks --> FFN["🍽️ FeedForward<br/>2-layer MLP"]
+    end
+    
+    %% Multi-Head Attention Details  
+    subgraph "MultiHeadAttention"
+        MHA --> Head1["👁️ Head 1<br/>Q/K/V projections"]
+        MHA --> Head2["👁️ Head 2<br/>Q/K/V projections"]
+        MHA --> HeadN["👁️ Head N<br/>Q/K/V projections"]
+        MHA --> ProjOut["🔄 Output Projection<br/>Combine heads"]
+    end
+    
+    %% Attention Head Details
+    subgraph "Attention Head"
+        Head1 --> Query["🔍 Query<br/>Linear projection"]
+        Head1 --> Key["🔑 Key<br/>Linear projection"]  
+        Head1 --> Value["💎 Value<br/>Linear projection"]
+    end
+    
+    %% Feed Forward Details
+    subgraph "FeedForward Network"
+        FFN --> FC1["➡️ Linear FC1<br/>Expand dimensions"]
+        FFN --> Activation["⚡ ReLU/GeLU<br/>Activation"]
+        FFN --> FC2["⬅️ Linear FC2<br/>Contract dimensions"]
+    end
+    
+    %% Tensor Foundation
+    subgraph "Data Structure"
+        Tensor["📊 Tensor<br/>• data: vector&lt;float&gt;<br/>• shape: vector&lt;int&gt;<br/>• Operations: norm, mean, sum"]
+    end
+    
+    %% All components use Tensor
+    Embedding -.-> Tensor
+    PE -.-> Tensor
+    LN1 -.-> Tensor
+    LN2 -.-> Tensor
+    LNFinal -.-> Tensor
+    Query -.-> Tensor
+    Key -.-> Tensor
+    Value -.-> Tensor
+    FC1 -.-> Tensor
+    FC2 -.-> Tensor
+    LMHead -.-> Tensor
+    
+    %% Parameters
+    subgraph "Model Parameters"
+        Params["⚙️ TransformerParameters<br/>• vocab_size: 3266<br/>• n_embd: 192<br/>• n_head: 6<br/>• n_layer: 6<br/>• max_context: 512<br/>• dropout: 0.1"]
+    end
+    
+    style TinyLLM fill:#e1f5fe
+    style Transformer fill:#f3e5f5
+    style HybridTokenizer fill:#e8f5e8
+    style Tensor fill:#fff3e0
 ```
 
-### "Failed to open shared memory: No such file or directory"
-- This shouldn't happen with automatic worker management
-- If it does, restart the server (it creates shared memory)
+## Getting Started
 
-### "Failed to enqueue request - server may be overloaded"
-- All 256 ring buffer slots are full
-- Workers may be too slow or crashed  
-- Server will automatically restart crashed workers
-- Check server logs for worker spawn/termination messages
+### Prerequisites
 
-## Graceful Shutdown
+-   C++ Compiler (g++)
+-   CMake (>= 3.20)
+-   Ninja Build (`sudo apt install ninja-build`)
 
-1. **Ctrl+C on server**: Automatically terminates all managed workers and cleans up resources
-2. **Automatic cleanup**: Shared memory and semaphores are unlinked
-3. **Worker monitoring**: Background thread stops and all workers are gracefully terminated
+### Build & Run
 
-## Performance Considerations
+1.  **Clone the repository and initialize submodules:**
+    ```bash
+    git clone <repository-url>
+    cd <repository-directory>
+    ```
 
-- **Ring Buffer**: Prevents memory allocation during processing
-- **Atomic Operations**: Lock-free head/tail advancement
-- **TCP_NODELAY**: Disabled Nagle's algorithm for lower latency
-- **Thread Pool**: HTTP requests handled in separate threads
-- **Bounded Queues**: Prevents unbounded memory growth
+2.  **Run the build script:**
+    This script will check dependencies, configure the project with CMake, and compile the server.
+    ```bash
+    ./build_linux.sh
+    ```
 
-## Development
+3.  **Start the server:**
+    The script will automatically start the server after a successful build. By default, it runs on `http://localhost:8080`.
 
-### Adding New Processing Logic
+## API Endpoints
 
-Modify `src/worker/worker_process.cpp`:
+### `POST /process`
 
-```cpp
-std::string WorkerProcess::process_message(const std::string& input) {
-    // Add your custom processing here
-    return "PROCESSED: " + input;
-}
-```
+Submits a prompt for inference.
 
-### Extending the API
+-   **Request Body**:
+    ```json
+    {
+      "message": "Your prompt text here",
+      "max_tokens": 100
+    }
+    ```
+-   **Example `curl` command**:
+    ```bash
+    curl -X POST http://localhost:8080/process \
+         -H "Content-Type: application/json" \
+         -d '{"message":"Hello World"}'
+    ```
 
-Add new endpoints in `src/main_server.cpp`:
+### `GET /ping`
 
-```cpp
-if (request.method == "POST" && request.path == "/new_endpoint") {
-    // Handle new endpoint
-}
-```
+A simple health check endpoint.
 
-### Monitoring
-
-Server logs all operations:
-- Worker spawn/termination events
-- Task dispatch and assignment  
-- Processing start/completion
-- Scaling decisions (up/down)
-- Health monitoring and restarts
-- Error conditions and shutdown sequences
-
-## Troubleshooting
-
-### Build Issues
-
-```bash
-# Missing dependencies
-sudo apt-get install build-essential cmake libpthread-stubs0-dev
-
-# Clean build
-rm -rf build && mkdir build && cd build && cmake .. && make
-```
-
-### Runtime Issues
-
-```bash
-# Check shared memory
-ls -la /dev/shm/mock_*
-
-# Check semaphores  
-ls -la /dev/shm/sem.*
-
-# Monitor processes
-ps aux | grep -E "(server|worker)"
-
-# Check system limits
-cat /proc/sys/fs/mqueue/msg_max
-cat /proc/sys/kernel/sem
-```
-
-## Design Decisions
-
-### Why Shared Memory?
-- **Performance**: Zero-copy message passing
-- **Scalability**: Supports high-throughput scenarios
-- **Isolation**: Workers run in separate processes
-
-### Why Ring Buffer?
-- **Bounded Memory**: Prevents unbounded growth
-- **Lock-free**: Atomic head/tail operations
-- **Cache Friendly**: Sequential memory access
-
-### Why POSIX Semaphores?
-- **Cross-platform**: Available on all Unix systems
-- **Kernel-level**: Reliable synchronization
-- **Named**: Survives process crashes
-
-## Future Enhancements
-
-- **Streaming**: Partial result transmission
-- **Load Balancing**: Dynamic worker assignment
-- **Health Checks**: Worker process monitoring
-- **Metrics**: Performance and throughput monitoring
-- **Windows Support**: Named pipes and memory-mapped files
-
-## License
-
-This project is part of a take-home assignment demonstrating shared memory IPC and worker process architecture.
+-   **Example `curl` command**:
+    ```bash
+    curl http://localhost:8080/ping
+    ```
+-   **Success Response**:
+    ```json
+    {"status": "ok"}
+    ```

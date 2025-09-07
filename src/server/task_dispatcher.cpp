@@ -1,10 +1,9 @@
 #include "task_dispatcher.hpp"
+#include "../utils/http_utils.hpp"
 #include <iostream>
 #include <chrono>
 #include <thread>
 #include <functional>
-#include <sstream>
-#include <iomanip>
 
 
 // #define DEBUG_PRINT
@@ -16,31 +15,6 @@
 #define DEBUG_COUT(x)
 #endif
 
-
-std::string build_json_response_chunk(const std::string &s, bool is_last) {
-    std::ostringstream o;
-    for (auto c = s.cbegin(); c != s.cend(); c++) {
-        switch (*c) {
-            case '"': o << "\\\""; break;
-            case '\\': o << "\\\\"; break;
-            case '\b': o << "\\b"; break;
-            case '\f': o << "\\f"; break;
-            case '\n': o << "\\n"; break;
-            case '\r': o << "\\r"; break;
-            case '\t': o << "\\t"; break;
-            default:
-                if ('\x00' <= *c && *c <= '\x1f') {
-                    o << "\\u"
-                      << std::hex << std::setw(4) << std::setfill('0') << (int)*c;
-                } else {
-                    o << *c;
-                }
-        }
-    }
-    std::stringstream json_chunk;
-    json_chunk << "{\"chunk\": \"" << o.str() << "\", \"is_last\": " << (is_last ? "true" : "false") << "}";
-    return json_chunk.str();
-}
 
 TaskDispatcher::TaskDispatcher() : should_stop_monitoring(false) {
     ipc_manager = std::make_unique<IPCManager>(true);  // true = server mode
@@ -116,7 +90,7 @@ void TaskDispatcher::process_message(std::function<bool(const std::string&)> chu
             continue; // Client is gone, just drain the queue until the worker is done
         }
 
-        std::string escaped_chunk_json_data = build_json_response_chunk(chunk_data, is_last);
+        std::string escaped_chunk_json_data = HttpUtils::build_json_response_chunk(chunk_data, is_last);
 
         DEBUG_COUT("Received chunk for task " << task_id << " from worker " << assigned_worker << " (chunk: \"" << escaped_chunk_json_data << "\")");
         if (!chunk_callback(escaped_chunk_json_data)) {

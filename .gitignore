@@ -1,11 +1,12 @@
-build/
+build
 external/
 .vscode
 __pycache__
 build_windows
 build_linux
 
+model/
 
-model/weights
+
 script/best_model.pth
 script/final_model.pth

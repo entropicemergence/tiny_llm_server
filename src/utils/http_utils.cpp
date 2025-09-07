@@ -1,4 +1,5 @@
 #include "http_utils.hpp"
+#include <iomanip>
 
 bool HttpUtils::parseJsonMessage(const std::string& jsonBody, ProcessRequest& request) {
     size_t maxTokensPos = jsonBody.find("\"max_tokens\"");
@@ -127,4 +128,29 @@ std::string HttpUtils::buildHttpChunk(const std::string& data) {
     chunk << std::hex << data.length() << "\r\n";
     chunk << data << "\r\n";
     return chunk.str();
+}
+
+std::string HttpUtils::build_json_response_chunk(const std::string &s, bool is_last) {
+    std::ostringstream o;
+    for (auto c = s.cbegin(); c != s.cend(); c++) {
+        switch (*c) {
+            case '"': o << "\\\""; break;
+            case '\\': o << "\\\\"; break;
+            case '\b': o << "\\b"; break;
+            case '\f': o << "\\f"; break;
+            case '\n': o << "\\n"; break;
+            case '\r': o << "\\r"; break;
+            case '\t': o << "\\t"; break;
+            default:
+                if ('\x00' <= *c && *c <= '\x1f') {
+                    o << "\\u"
+                      << std::hex << std::setw(4) << std::setfill('0') << (int)*c;
+                } else {
+                    o << *c;
+                }
+        }
+    }
+    std::stringstream json_chunk;
+    json_chunk << "{\"chunk\": \"" << o.str() << "\", \"is_last\": " << (is_last ? "true" : "false") << "}";
+    return json_chunk.str();
 }

@@ -2,32 +2,6 @@
     "version": 3,
     "configurePresets": [
         {
-            "name": "windows-release",
-            "generator": "Ninja",
-            "binaryDir": "${sourceDir}/build",
-            "cacheVariables": {
-                "CMAKE_BUILD_TYPE": "Release"
-            },
-            "condition": {
-                "type": "equals",
-                "lhs": "${hostSystemName}",
-                "rhs": "Windows"
-            }
-        },
-        {
-            "name": "windows-debug",
-            "generator": "Ninja",
-            "binaryDir": "${sourceDir}/build-debug",
-            "cacheVariables": {
-                "CMAKE_BUILD_TYPE": "Debug"
-            },
-            "condition": {
-                "type": "equals",
-                "lhs": "${hostSystemName}",
-                "rhs": "Windows"
-            }
-        },
-        {
             "name": "linux-release",
             "generator": "Ninja",
             "binaryDir": "${sourceDir}/build",
@@ -55,14 +29,6 @@
         }
     ],
     "buildPresets": [
-        {
-            "name": "windows-release",
-            "configurePreset": "windows-release"
-        },
-        {
-            "name": "windows-debug",
-            "configurePreset": "windows-debug"
-        },
         {
             "name": "linux-release",
             "configurePreset": "linux-release"
