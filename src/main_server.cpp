@@ -49,9 +49,12 @@ private:
     SOCKET serverSocket;
     int port;
     std::unique_ptr<TaskDispatcher> task_dispatcher;
+    std::atomic<int> active_connections_{0};
+    int max_connections_;
 
 public:
-    HttpInferenceServer(int serverPort) : port(serverPort), serverSocket(INVALID_SOCKET) {
+    HttpInferenceServer(int serverPort, int max_connections) 
+        : port(serverPort), serverSocket(INVALID_SOCKET), max_connections_(max_connections) {
         task_dispatcher = std::make_unique<TaskDispatcher>();
     }
     ~HttpInferenceServer() {
@@ -93,6 +96,19 @@ public:
     // Handle client connection
     void handleClient(SOCKET clientSocket) {
         DEBUG_COUT("Handling new client on socket " << clientSocket);
+        
+        struct ConnectionGuard {
+            HttpInferenceServer* server;
+            SOCKET sock;
+            ConnectionGuard(HttpInferenceServer* s, SOCKET k) : server(s), sock(k) {}
+            ~ConnectionGuard() {
+                server->active_connections_--;
+                DEBUG_COUT("Connection closed. Active connections: " << server->active_connections_.load(std::memory_order_relaxed));
+                closesocket(sock);
+            }
+        };
+        ConnectionGuard guard(this, clientSocket);
+
         // Set TCP_NODELAY to disable Nagle's algorithm for lower latency
         int opt = 1;
         setsockopt(clientSocket, IPPROTO_TCP, TCP_NODELAY, (char*)&opt, sizeof(opt));
@@ -103,7 +119,6 @@ public:
             DEBUG_CERR("Failed to read/parse HTTP request from client " << clientSocket);
             std::string response = HttpUtils::buildHttpResponse(400, "Bad Request", "{\"error\": \"Invalid HTTP request\"}");    // send bad request response to client. Close connection.
             send(clientSocket, response.c_str(), response.length(), 0);
-            closesocket(clientSocket);
             return;
         }
         DEBUG_COUT("Successfully parsed request from client " << clientSocket << ": " << request.method << " " << request.path);
@@ -138,23 +153,18 @@ public:
                         DEBUG_CERR("Failed to send final chunk");
                     }
                 }
-                closesocket(clientSocket);
-
             } else {
                 std::string response = HttpUtils::buildHttpResponse(400, "Bad Request", "{\"error\": \"Invalid JSON or missing message field\"}");
                 send(clientSocket, response.c_str(), response.length(), 0);
-                closesocket(clientSocket);
             }
         } else if (request.method == "GET" && request.path == "/ping") {
             DEBUG_COUT("Handling /ping request from client " << clientSocket);
             std::string response = HttpUtils::buildHttpResponse(200, "OK", "{\"status\": \"ok\"}");
             send(clientSocket, response.c_str(), response.length(), 0);
-            closesocket(clientSocket);
             DEBUG_COUT("Finished /ping request for client " << clientSocket);
         } else {
             std::string response = HttpUtils::buildHttpResponse(404, "Not Found", "{\"error\": \"Endpoint not found\"}");
             send(clientSocket, response.c_str(), response.length(), 0);
-            closesocket(clientSocket);
         }
     }
 
@@ -208,6 +218,16 @@ public:
                     continue;
                 }
 
+                if (active_connections_.load(std::memory_order_relaxed) >= max_connections_) {
+                    DEBUG_CERR("Max connections reached (" << max_connections_ << "). Rejecting new connection.");
+                    std::string response = HttpUtils::buildHttpResponse(503, "Service Unavailable", "{\"error\": \"Max connections reached\"}");
+                    send(clientSocket, response.c_str(), response.length(), 0);
+                    closesocket(clientSocket);
+                    continue;
+                }
+                active_connections_++;
+                DEBUG_COUT("Connection accepted. Active connections: " << active_connections_.load(std::memory_order_relaxed));
+
                 // Handle client in a separate thread. Fixed, the tradeoff to implement asyncronous loop is not worth it.
                 std::thread clientThread(&HttpInferenceServer::handleClient, this, clientSocket);
                 clientThread.detach();
@@ -230,11 +250,29 @@ int main() {
         return 1;
     }
 
+    auto& config = AppConfig::get_instance();
+    std::cout << "---------------------------------" << std::endl;
+    std::cout << "Configuration loaded from config.txt:" << std::endl;
+    std::cout << "  WORKER_EXECUTABLE_PATH: " << config.get_string("WORKER_EXECUTABLE_PATH", "./build/worker") << std::endl;
+    std::cout << "  MIN_WORKERS: " << config.get_int("MIN_WORKERS", 2) << std::endl;
+    std::cout << "  MAX_WORKERS_DYNAMIC: " << config.get_int("MAX_WORKERS_DYNAMIC", 4) << std::endl;
+    std::cout << "  MODEL_PATH: " << config.get_string("MODEL_PATH", "model/weights") << std::endl;
+    std::cout << "  TOKENIZER_PATH: " << config.get_string("TOKENIZER_PATH", "model/tinystories_tokenizer_vocab.json") << std::endl;
+    std::cout << "  SHM_NAME: " << config.get_string("SHM_NAME", "/inference_shm") << std::endl;
+    std::cout << "  SEM_REQ_ITEMS_PREFIX: " << config.get_string("SEM_REQ_ITEMS_PREFIX", "/sem_req_items_") << std::endl;
+    std::cout << "  SEM_REQ_SPACE_PREFIX: " << config.get_string("SEM_REQ_SPACE_PREFIX", "/sem_req_space_") << std::endl;
+    std::cout << "  SEM_RESP_PREFIX: " << config.get_string("SEM_RESP_PREFIX", "/sem_resp_") << std::endl;
+    std::cout << "  SEM_RESP_CONSUMED_PREFIX: " << config.get_string("SEM_RESP_CONSUMED_PREFIX", "/sem_resp_consumed_") << std::endl;
+    std::cout << "  MAX_CONNECTIONS: " << config.get_int("MAX_CONNECTIONS", 20) << std::endl;
+    std::cout << "Note that the number of worker and client connections are capped to 5 and 20 respectively" << std::endl;
+    std::cout << "---------------------------------" << std::endl;
+
     // Minimal Oatpp usage - just for environment initialization
     // oatpp::base::Environment::init();
-
     try {
-        HttpInferenceServer server(8080);
+        int max_connections = config.get_int("MAX_CONNECTIONS", 20);
+        max_connections = std::min(max_connections, 20);
+        HttpInferenceServer server(8080, config.get_int("MAX_CONNECTIONS", 20));
         server.run();
         
     } catch (const std::exception& e) {

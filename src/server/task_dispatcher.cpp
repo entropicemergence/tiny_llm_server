@@ -22,6 +22,7 @@ TaskDispatcher::TaskDispatcher() : should_stop_monitoring(false) {
     std::string worker_path = config.get_string("WORKER_EXECUTABLE_PATH", "./build/worker");
     int min_workers = config.get_int("MIN_WORKERS", 2);
     int max_workers = config.get_int("MAX_WORKERS_DYNAMIC", 4);
+    max_workers = std::min(max_workers, static_cast<int>(MAX_WORKERS));
 
     ipc_manager = std::make_unique<IPCManager>(true);  // true = server mode
     worker_manager = std::make_unique<WorkerManager>(ipc_manager.get(), worker_path, min_workers, max_workers);
@@ -31,7 +32,7 @@ TaskDispatcher::~TaskDispatcher() {
     // stop_monitor_thread();                  // stop all monitoring first bfore dealocating worker resources.
     std::cout << "Cleaning up task dispatcher..." << std::endl;
     ipc_manager->request_shutdown();        // Request shutdown of all workers
-    worker_manager->print_stats();
+    // worker_manager->print_stats();
     worker_manager.reset();                 // Cleanup worker manager (this will terminate all workers) ??
     std::cout << "Task dispatcher cleanup complete" << std::endl;
 }

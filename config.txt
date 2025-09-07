@@ -1,6 +1,6 @@
 WORKER_EXECUTABLE_PATH=./build/worker
 MIN_WORKERS=1
-MAX_WORKERS_DYNAMIC=5
+MAX_WORKERS_DYNAMIC=4
 MODEL_PATH=model/weights
 TOKENIZER_PATH=model/tinystories_tokenizer_vocab.json
 SHM_NAME=/inference_shm
@@ -8,3 +8,4 @@ SEM_REQ_ITEMS_PREFIX=/sem_req_items_
 SEM_REQ_SPACE_PREFIX=/sem_req_space_
 SEM_RESP_PREFIX=/sem_resp_
 SEM_RESP_CONSUMED_PREFIX=/sem_resp_consumed_
+MAX_CONNECTIONS=15

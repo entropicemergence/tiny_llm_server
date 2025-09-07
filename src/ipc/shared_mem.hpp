@@ -7,7 +7,7 @@
 
 // Configuration constants
 constexpr size_t CHUNK_SIZE = 4096;        // Maximum message size
-constexpr size_t MAX_WORKERS = 8;          // Maximum number of worker processes.
+constexpr size_t MAX_WORKERS = 5;          // Maximum number of worker processes.
 constexpr size_t RING_CAP_PER_WORKER = 32; // Capacity of each worker's request queue, MUST be a power of 2
 
 // Shared memory object names

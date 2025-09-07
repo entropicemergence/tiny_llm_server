@@ -339,7 +339,7 @@ void WorkerManager::print_stats() const {
     const std::string BG_GREEN = "\033[42m";
     const std::string BG_RED = "\033[41m";
 
-    std::cout << "\033[27A";
+    std::cout << "\033[24A";
         
     std::cout << BG_BLUE << WHITE << BOLD << "  WORKER TASK MANAGER                                                             " << RESET << std::endl;
     std::cout << std::endl;
