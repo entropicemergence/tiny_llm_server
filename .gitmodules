@@ -1,4 +1,0 @@
-[submodule "external/oatpp"]
-	path = external/oatpp
-	url = https://github.com/oatpp/oatpp.git
-	branch = 1.3.1
