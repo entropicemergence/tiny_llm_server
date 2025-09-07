@@ -4,12 +4,6 @@
 
 echo "Building HTTP Server for Ubuntu/WSL..."
 
-# # Remove build directory if it exists
-# if [ -d "build" ]; then
-#     echo "Removing existing build directory..."
-#     rm -rf build
-# fi
-
 # Check if required tools are installed
 check_dependency() {
     if ! command -v $1 &> /dev/null; then
@@ -63,7 +57,7 @@ echo "To test the server:"
 echo "  curl -X POST http://localhost:8080/process -H \"Content-Type: application/json\" -d '{\"message\":\"Hello World\"}'"
 echo ""
 echo "Press any key to continue..."
-# read -n 1 -s
+read -n 1 -s
 
 
 # build/inference

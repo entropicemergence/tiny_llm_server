@@ -6,7 +6,8 @@ build_windows
 build_linux
 
 model/
-
+release_weight/
+dataset/
 
 script/best_model.pth
 script/final_model.pth

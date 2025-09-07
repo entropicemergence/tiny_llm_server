@@ -18,7 +18,7 @@
 
 TaskDispatcher::TaskDispatcher() : should_stop_monitoring(false) {
     ipc_manager = std::make_unique<IPCManager>(true);  // true = server mode
-    worker_manager = std::make_unique<WorkerManager>(ipc_manager.get(), "./build_linux/worker", 2, 4);  // min=2, max=4 workers
+    worker_manager = std::make_unique<WorkerManager>(ipc_manager.get(), "./build/worker", 2, 4);  // min=2, max=4 workers
 }
 
 TaskDispatcher::~TaskDispatcher() {

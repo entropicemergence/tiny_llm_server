@@ -1,6 +1,6 @@
 # TinyLLM Inference Server
 
-A high-performance, multi-process C++ inference server designed to serve the TinyLLM model. It's built from the ground up using low-level sockets and shared memory for efficient, low-latency request handling.
+A high-performance, multi-process C++ inference server designed to serve the TinyLLM model. It's built from the ground up using low-level sockets and shared memory for efficient, low-latency request handling. The LLM inference is written from scratch in C++, trained in pytorch. 
 
 ## Features
 
@@ -116,7 +116,17 @@ flowchart TD
 
 ## LLM Model Architecture
 
-The underlying language model is a compact Transformer network.
+The underlying language model is a compact, decoder-only Transformer network designed for efficiency. Key architectural details include:
+
+-   **Architecture**: A 6-layer decoder-only Transformer.
+-   **Embedding Dimension**: 192 (`n_embd`).
+-   **Attention Mechanism**: 6-head causal multi-head self-attention (`n_head`).
+-   **Feed-Forward Network**: Uses GELU activation.
+-   **Positional Encoding**: Sinusoidal positional encodings are used instead of learned embeddings.
+-   **Context Window**: 512 tokens (`max_context`). In practice this is limited to ~50 tokens, as the inference code haven't implmented KV catching yet
+-   **Vocabulary Size**: 3266 tokens, handled by a custom hybrid word/character tokenizer.
+
+The model is implemented from scratch in C++ for the inference server, with the original model trained in PyTorch. The training code is available in the `script` directory.
 
 ```mermaid
 graph TD
@@ -213,20 +223,37 @@ graph TD
 
 ### Build & Run
 
-1.  **Clone the repository and initialize submodules:**
+1.  **Clone the repository:**
     ```bash
-    git clone <repository-url>
-    cd <repository-directory>
+    git clone https://github.com/entropicemergence/tiny_llm_server.git
+    cd tiny_llm_server
     ```
 
-2.  **Run the build script:**
-    This script will check dependencies, configure the project with CMake, and compile the server.
+2.  **Download the model weight:**
+    ```bash
+    ./download_weight.sh
+    ```
+
+3.  **Run the build script:**
+    This script will check dependencies, configure the project with CMake, and compile the server and llm inference engine. The compile process should take less than 10 seconds.
     ```bash
     ./build_linux.sh
     ```
 
-3.  **Start the server:**
-    The script will automatically start the server after a successful build. By default, it runs on `http://localhost:8080`.
+4.  **Start the server:**
+    Start the server from the root directory with `./build/server`. By default, it runs on `http://localhost:8080`. Though I notice some huge latency in local DNS resolver while in WSL, so for full performance, use `http://127.0.0.1:8080` instead.
+
+5.  **Run the test client:**
+    I have prepared a suite of test clients in the `client` directory for debugging and benchmarking. require `pip install requests`
+    ```bash
+    python client/error_handling_client.py  # test error handling
+    ```
+    ```bash
+    python client/simple_client.py          # test simple inference
+    ```
+    ```bash
+    python client/multi_inference.py        # test multi client inference
+    ```
 
 ## API Endpoints
 
@@ -238,14 +265,13 @@ Submits a prompt for inference.
     ```json
     {
       "message": "Your prompt text here",
-      "max_tokens": 100
+      "max_tokens": 50
     }
     ```
+    for now the model only supports max 50 tokens.
 -   **Example `curl` command**:
     ```bash
-    curl -X POST http://localhost:8080/process \
-         -H "Content-Type: application/json" \
-         -d '{"message":"Hello World"}'
+    curl -X POST http://localhost:8080/process -H "Content-Type: application/json" -d '{"message":"hello"}'
     ```
 
 ### `GET /ping`
@@ -260,3 +286,13 @@ A simple health check endpoint.
     ```json
     {"status": "ok"}
     ```
+
+## TODO
+
+-   [ ] Implement KV catching in the transformer.
+-   [ ] Optimize the task dequeue to handle abrupt client disconnection. Right now the server will consume all task in queue.
+-   [ ] Ditch thread dispatch system, use event loop and thread pool instead.
+-   [ ] Optimize tensor memory layout, 32 byte aligned for better performance.
+-   [ ] Implement quantization support (q4, q5, q6, q8)
+-   [ ] Add avx512 backend (bfp16 compute)
+-   [ ] Add cuda backend with tensor core support
